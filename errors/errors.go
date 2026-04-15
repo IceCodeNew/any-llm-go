@@ -17,6 +17,7 @@ const (
 	CodeMissingAPIKey       = "missing_api_key"
 	CodeUnsupportedProvider = "unsupported_provider"
 	CodeUnsupportedParam    = "unsupported_parameter"
+	CodeInsufficientFunds   = "insufficient_funds"
 )
 
 // Sentinel errors for type checking with errors.Is().
@@ -31,6 +32,7 @@ var (
 	ErrMissingAPIKey       = stderrors.New("missing API key")
 	ErrUnsupportedProvider = stderrors.New("unsupported provider")
 	ErrUnsupportedParam    = stderrors.New("unsupported parameter")
+	ErrInsufficientFunds   = stderrors.New("insufficient funds")
 )
 
 // BaseError is the base error type for all any-llm errors.
@@ -47,6 +49,30 @@ type BaseError struct {
 
 	// sentinel is the sentinel error for errors.Is() matching.
 	sentinel error
+}
+
+// New constructs a BaseError for embedding in a caller-defined error type.
+// It exists so packages outside this one can populate the unexported
+// sentinel field that drives errors.Is matching; without it, external
+// packages could only set the exported fields via struct literals and
+// errors.Is(err, ErrFoo) would never match.
+//
+// Typical usage from a provider package:
+//
+//	type UpstreamProviderError struct{ errors.BaseError }
+//
+//	func NewUpstreamProviderError(provider string, err error) *UpstreamProviderError {
+//	    return &UpstreamProviderError{
+//	        BaseError: errors.New("upstream_provider", provider, err, ErrUpstreamProvider),
+//	    }
+//	}
+func New(code string, provider string, err error, sentinel error) BaseError {
+	return BaseError{
+		Code:     code,
+		Provider: provider,
+		Err:      err,
+		sentinel: sentinel,
+	}
 }
 
 // Error implements the error interface.
@@ -123,6 +149,11 @@ type UnsupportedProviderError struct {
 type UnsupportedParamError struct {
 	BaseError
 	Param string // The unsupported parameter name
+}
+
+// InsufficientFundsError is returned when the account has insufficient funds (HTTP 402).
+type InsufficientFundsError struct {
+	BaseError
 }
 
 // NewRateLimitError creates a new RateLimitError.
@@ -247,5 +278,17 @@ func NewUnsupportedParamError(provider string, param string) *UnsupportedParamEr
 			sentinel: ErrUnsupportedParam,
 		},
 		Param: param,
+	}
+}
+
+// NewInsufficientFundsError creates a new InsufficientFundsError.
+func NewInsufficientFundsError(provider string, err error) *InsufficientFundsError {
+	return &InsufficientFundsError{
+		BaseError: BaseError{
+			Code:     CodeInsufficientFunds,
+			Provider: provider,
+			Err:      err,
+			sentinel: ErrInsufficientFunds,
+		},
 	}
 }

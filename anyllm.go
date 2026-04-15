@@ -125,6 +125,7 @@ var (
 	ErrAuthentication      = errors.ErrAuthentication
 	ErrContentFilter       = errors.ErrContentFilter
 	ErrContextLength       = errors.ErrContextLength
+	ErrInsufficientFunds   = errors.ErrInsufficientFunds
 	ErrInvalidRequest      = errors.ErrInvalidRequest
 	ErrMissingAPIKey       = errors.ErrMissingAPIKey
 	ErrModelNotFound       = errors.ErrModelNotFound
@@ -140,6 +141,7 @@ type (
 	BaseError                = errors.BaseError
 	ContentFilterError       = errors.ContentFilterError
 	ContextLengthError       = errors.ContextLengthError
+	InsufficientFundsError   = errors.InsufficientFundsError
 	InvalidRequestError      = errors.InvalidRequestError
 	MissingAPIKeyError       = errors.MissingAPIKeyError
 	ModelNotFoundError       = errors.ModelNotFoundError

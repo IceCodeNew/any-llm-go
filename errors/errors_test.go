@@ -84,6 +84,18 @@ func TestErrorIs(t *testing.T) {
 			target:    ErrUnsupportedParam,
 			wantMatch: true,
 		},
+		{
+			name:      "InsufficientFundsError matches ErrInsufficientFunds",
+			err:       NewInsufficientFundsError("gateway", originalErr),
+			target:    ErrInsufficientFunds,
+			wantMatch: true,
+		},
+		{
+			name:      "InsufficientFundsError does not match ErrAuthentication",
+			err:       NewInsufficientFundsError("gateway", originalErr),
+			target:    ErrAuthentication,
+			wantMatch: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -130,6 +142,11 @@ func TestErrorMessage(t *testing.T) {
 			name:        "UnsupportedParamError includes param name",
 			err:         NewUnsupportedParamError("openai", "bad_param"),
 			wantContain: []string{"[openai]", "unsupported_parameter", "bad_param"},
+		},
+		{
+			name:        "InsufficientFundsError includes provider and code",
+			err:         NewInsufficientFundsError("gateway", originalErr),
+			wantContain: []string{"[gateway]", "insufficient_funds", "something went wrong"},
 		},
 	}
 
@@ -207,6 +224,12 @@ func TestErrorCodes(t *testing.T) {
 		err := NewUnsupportedParamError("openai", "param")
 		require.Equal(t, CodeUnsupportedParam, err.Code)
 	})
+
+	t.Run("InsufficientFundsError has correct code", func(t *testing.T) {
+		t.Parallel()
+		err := NewInsufficientFundsError("gateway", nil)
+		require.Equal(t, CodeInsufficientFunds, err.Code)
+	})
 }
 
 func TestErrorAs(t *testing.T) {
@@ -244,5 +267,15 @@ func TestErrorAs(t *testing.T) {
 		require.True(t, stderrors.As(err, &paramErr))
 		require.Equal(t, "frequency_penalty", paramErr.Param)
 		require.Equal(t, "openai", paramErr.Provider)
+	})
+
+	t.Run("can extract InsufficientFundsError", func(t *testing.T) {
+		t.Parallel()
+
+		err := NewInsufficientFundsError("gateway", stderrors.New("payment required"))
+
+		var fundsErr *InsufficientFundsError
+		require.True(t, stderrors.As(err, &fundsErr))
+		require.Equal(t, "gateway", fundsErr.Provider)
 	})
 }
