@@ -39,6 +39,18 @@ const (
 	FinishReasonToolCalls     = providers.FinishReasonToolCalls
 )
 
+// Batch status constants.
+const (
+	BatchStatusCancelled  = providers.BatchStatusCancelled
+	BatchStatusCancelling = providers.BatchStatusCancelling
+	BatchStatusCompleted  = providers.BatchStatusCompleted
+	BatchStatusExpired    = providers.BatchStatusExpired
+	BatchStatusFailed     = providers.BatchStatusFailed
+	BatchStatusFinalizing = providers.BatchStatusFinalizing
+	BatchStatusInProgress = providers.BatchStatusInProgress
+	BatchStatusValidating = providers.BatchStatusValidating
+)
+
 // ReasoningEffort levels.
 const (
 	ReasoningEffortAuto   = providers.ReasoningEffortAuto
@@ -50,11 +62,24 @@ const (
 
 // Provider types.
 type (
+	BatchProvider      = providers.BatchProvider
 	Capabilities       = providers.Capabilities
 	CapabilityProvider = providers.CapabilityProvider
 	EmbeddingProvider  = providers.EmbeddingProvider
 	ModelLister        = providers.ModelLister
 	Provider           = providers.Provider
+)
+
+// Batch types.
+type (
+	Batch              = providers.Batch
+	BatchRequestCounts = providers.BatchRequestCounts
+	BatchRequestItem   = providers.BatchRequestItem
+	BatchResult        = providers.BatchResult
+	BatchResultError   = providers.BatchResultError
+	BatchResultItem    = providers.BatchResultItem
+	CreateBatchParams  = providers.CreateBatchParams
+	ListBatchesOptions = providers.ListBatchesOptions
 )
 
 // Request/Response types.
@@ -97,6 +122,7 @@ type (
 
 // Usage and model types.
 type (
+	BatchStatus     = providers.BatchStatus
 	EmbeddingData   = providers.EmbeddingData
 	EmbeddingUsage  = providers.EmbeddingUsage
 	Model           = providers.Model
