@@ -67,6 +67,7 @@ type (
 	CapabilityProvider = providers.CapabilityProvider
 	EmbeddingProvider  = providers.EmbeddingProvider
 	ModelLister        = providers.ModelLister
+	ModerationProvider = providers.ModerationProvider
 	Provider           = providers.Provider
 	RerankProvider     = providers.RerankProvider
 )
@@ -94,6 +95,9 @@ type (
 	EmbeddingParams     = providers.EmbeddingParams
 	EmbeddingResponse   = providers.EmbeddingResponse
 	ModelsResponse      = providers.ModelsResponse
+	ModerationParams    = providers.ModerationParams
+	ModerationResponse  = providers.ModerationResponse
+	ModerationResult    = providers.ModerationResult
 )
 
 // Message types.
@@ -167,22 +171,24 @@ var (
 	ErrModelNotFound       = errors.ErrModelNotFound
 	ErrProvider            = errors.ErrProvider
 	ErrRateLimit           = errors.ErrRateLimit
+	ErrUnsupported         = errors.ErrUnsupported
 	ErrUnsupportedParam    = errors.ErrUnsupportedParam
 	ErrUnsupportedProvider = errors.ErrUnsupportedProvider
 )
 
 // Error types.
 type (
-	AuthenticationError      = errors.AuthenticationError
-	BaseError                = errors.BaseError
-	ContentFilterError       = errors.ContentFilterError
-	ContextLengthError       = errors.ContextLengthError
-	InsufficientFundsError   = errors.InsufficientFundsError
-	InvalidRequestError      = errors.InvalidRequestError
-	MissingAPIKeyError       = errors.MissingAPIKeyError
-	ModelNotFoundError       = errors.ModelNotFoundError
-	ProviderError            = errors.ProviderError
-	RateLimitError           = errors.RateLimitError
-	UnsupportedParamError    = errors.UnsupportedParamError
-	UnsupportedProviderError = errors.UnsupportedProviderError
+	AuthenticationError           = errors.AuthenticationError
+	BaseError                     = errors.BaseError
+	ContentFilterError            = errors.ContentFilterError
+	ContextLengthError            = errors.ContextLengthError
+	InsufficientFundsError        = errors.InsufficientFundsError
+	InvalidRequestError           = errors.InvalidRequestError
+	MissingAPIKeyError            = errors.MissingAPIKeyError
+	ModelNotFoundError            = errors.ModelNotFoundError
+	ProviderError                 = errors.ProviderError
+	RateLimitError                = errors.RateLimitError
+	UnsupportedOperationError     = errors.UnsupportedOperationError
+	UnsupportedParamError         = errors.UnsupportedParamError
+	UnsupportedProviderError      = errors.UnsupportedProviderError
 )

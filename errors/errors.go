@@ -18,6 +18,7 @@ const (
 	CodeUnsupportedProvider = "unsupported_provider"
 	CodeUnsupportedParam    = "unsupported_parameter"
 	CodeInsufficientFunds   = "insufficient_funds"
+	CodeUnsupported         = "unsupported"
 )
 
 // Sentinel errors for type checking with errors.Is().
@@ -33,6 +34,7 @@ var (
 	ErrUnsupportedProvider = stderrors.New("unsupported provider")
 	ErrUnsupportedParam    = stderrors.New("unsupported parameter")
 	ErrInsufficientFunds   = stderrors.New("insufficient funds")
+	ErrUnsupported         = stderrors.New("operation not supported by provider")
 )
 
 // BaseError is the base error type for all any-llm errors.
@@ -154,6 +156,22 @@ type UnsupportedParamError struct {
 // InsufficientFundsError is returned when the account has insufficient funds (HTTP 402).
 type InsufficientFundsError struct {
 	BaseError
+}
+
+// UnsupportedOperationError indicates a provider does not support a given operation
+// (e.g. moderation). Use errors.As to detect:
+//
+//	var unsup *errors.UnsupportedOperationError
+//	if errors.As(err, &unsup) {
+//	    // unsup.Operation, unsup.Provider ...
+//	}
+//
+// Also matches errors.Is(err, ErrUnsupported).
+type UnsupportedOperationError struct {
+	BaseError
+	// Operation names the unsupported capability (e.g. "moderation",
+	// "multimodal_moderation").
+	Operation string
 }
 
 // NewRateLimitError creates a new RateLimitError.
@@ -290,5 +308,14 @@ func NewInsufficientFundsError(provider string, err error) *InsufficientFundsErr
 			Err:      err,
 			sentinel: ErrInsufficientFunds,
 		},
+	}
+}
+
+// NewUnsupportedOperationError creates a new UnsupportedOperationError for the given provider
+// and operation (e.g. "moderation").
+func NewUnsupportedOperationError(provider, operation string, err error) *UnsupportedOperationError {
+	return &UnsupportedOperationError{
+		BaseError: New(CodeUnsupported, provider, err, ErrUnsupported),
+		Operation: operation,
 	}
 }
