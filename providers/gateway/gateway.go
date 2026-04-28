@@ -130,6 +130,7 @@ var (
 	_ providers.ErrorConverter     = (*Provider)(nil)
 	_ providers.ModelLister        = (*Provider)(nil)
 	_ providers.Provider           = (*Provider)(nil)
+	_ providers.RerankProvider     = (*Provider)(nil)
 )
 
 // BatchNotCompleteError is returned when RetrieveBatchResults is called on
@@ -187,7 +188,13 @@ type Provider struct {
 	// OpenAI SDK.
 	apiKey string
 
-	// httpClient is used for batch API calls that bypass the OpenAI SDK.
+	// baseURL is the resolved gateway base URL without a trailing /v1 suffix.
+	// Used by Rerank to construct the /v1/rerank endpoint URL.
+	baseURL string
+
+	// httpClient is the HTTP client used for raw HTTP calls (e.g. rerank,
+	// batch API) that bypass the OpenAI SDK. In non-platform mode this is
+	// the header-injecting client so gateway auth is preserved.
 	httpClient *http.Client
 
 	// platformMode indicates whether the provider is operating in platform
@@ -290,16 +297,20 @@ func New(opts ...config.Option) (*Provider, error) {
 	// so NewCompatible sees the already-resolved, trimmed URL and does not
 	// re-run ResolveBaseURL.
 	compatOpts := slices.Clone(opts)
+	httpClient := cfg.HTTPClient()
 	if platformMode {
 		compatOpts = append(compatOpts, config.WithAPIKey(platformToken))
+		// Wrap the HTTP client so raw HTTP calls (e.g. Rerank) that bypass
+		// the OpenAI SDK also carry the platform Bearer token.
+		httpClient = newBearerClient(httpClient, platformToken)
 	} else {
 		// Non-platform mode: override any user-supplied API key with the
 		// placeholder so secrets can't leak via the Authorization header.
 		// Real auth, if any, is carried by the gateway header below.
 		compatOpts = append(compatOpts, config.WithAPIKey(placeholderAPIKey))
 		if gatewayKey != "" {
-			client := newHeaderClient(cfg.HTTPClient(), bearerPrefix+gatewayKey)
-			compatOpts = append(compatOpts, config.WithHTTPClient(client))
+			httpClient = newHeaderClient(cfg.HTTPClient(), bearerPrefix+gatewayKey)
+			compatOpts = append(compatOpts, config.WithHTTPClient(httpClient))
 		}
 	}
 	compatOpts = append(compatOpts, config.WithBaseURL(apiBase))
@@ -326,11 +337,17 @@ func New(opts ...config.Option) (*Provider, error) {
 		batchAPIKey = gatewayKey
 	}
 
+	// rawBaseURL strips any trailing /v1 suffix so that raw HTTP endpoints
+	// (e.g. /v1/rerank) can prepend the version prefix themselves.
+	rawBaseURL := strings.TrimSuffix(apiBase, "/v1")
+	rawBaseURL = strings.TrimSuffix(rawBaseURL, "/v1/")
+
 	return &Provider{
 		CompatibleProvider: base,
 		apiBase:            apiBase,
 		apiKey:             batchAPIKey,
-		httpClient:         cfg.HTTPClient(),
+		baseURL:            rawBaseURL,
+		httpClient:         httpClient,
 		platformMode:       platformMode,
 	}, nil
 }
@@ -346,10 +363,11 @@ func capabilities() providers.Capabilities {
 		CompletionImage:     true,
 		CompletionPDF:       true,
 		CompletionReasoning: true,
-		CompletionStreaming: true,
+		CompletionStreaming:  true,
 		CompletionTools:     true,
 		Embedding:           true,
 		ListModels:          true,
+		Rerank:              true,
 	}
 }
 
@@ -475,12 +493,137 @@ func (p *Provider) ListModels(ctx context.Context) (*providers.ModelsResponse, e
 	return resp, nil
 }
 
+// Rerank reranks documents by relevance to a query via the gateway's /v1/rerank endpoint.
+// The response contains results sorted by relevance_score in descending order.
+func (p *Provider) Rerank(ctx context.Context, params providers.RerankParams) (*providers.RerankResponse, error) {
+	if params.Model == "" {
+		return nil, errors.NewInvalidRequestError(providerName, fmt.Errorf("model is required"))
+	}
+	if params.Query == "" {
+		return nil, errors.NewInvalidRequestError(providerName, fmt.Errorf("query is required"))
+	}
+	if len(params.Documents) == 0 {
+		return nil, errors.NewInvalidRequestError(providerName, fmt.Errorf("at least one document is required"))
+	}
+
+	body, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling rerank request: %w", err)
+	}
+
+	reqURL := p.baseURL + "/v1/rerank"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating rerank request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, p.ConvertError(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, p.handleRerankErrorResponse(resp)
+	}
+
+	var result providers.RerankResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding rerank response: %w", err)
+	}
+	return &result, nil
+}
+
+// handleRerankErrorResponse parses an HTTP error response from the /v1/rerank
+// endpoint and returns a typed error.
+func (p *Provider) handleRerankErrorResponse(resp *http.Response) error {
+	// ReadAll error is ignored: if reading fails, we fall back to an empty
+	// body and still produce a typed error based on the status code.
+	body, _ := io.ReadAll(resp.Body)
+
+	parsed := parseRerankError(body)
+	msg := parsed.message()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return errors.NewAuthenticationError(providerName, fmt.Errorf("%s", msg))
+	case http.StatusNotFound:
+		return errors.NewModelNotFoundError(providerName, fmt.Errorf("%s", msg))
+	case http.StatusPaymentRequired:
+		return errors.NewInsufficientFundsError(providerName, fmt.Errorf("%s", msg))
+	case http.StatusTooManyRequests:
+		return errors.NewRateLimitError(providerName, fmt.Errorf("%s", msg))
+	case http.StatusBadGateway:
+		return &UpstreamProviderError{BaseError: errors.New(errCodeUpstreamProvider, providerName, fmt.Errorf("%s", msg), ErrUpstreamProvider)}
+	case http.StatusGatewayTimeout:
+		return &TimeoutError{BaseError: errors.New(errCodeTimeout, providerName, fmt.Errorf("%s", msg), ErrTimeout)}
+	default:
+		return errors.NewProviderError(providerName, fmt.Errorf("%s", msg))
+	}
+}
+
+// rerankError holds the parsed fields from a gateway rerank error response.
+// parseErr is non-nil when the body was not valid JSON or did not contain
+// the expected "detail" field, so callers can detect drift in the gateway
+// error shape.
+type rerankError struct {
+	Detail   string
+	raw      string
+	parseErr error
+}
+
+// message returns the best human-readable description of the error body.
+func (e rerankError) message() string {
+	if e.Detail != "" {
+		return e.Detail
+	}
+	return e.raw
+}
+
+// parseRerankError parses a gateway rerank error response. Non-JSON bodies
+// are preserved via the raw field so callers can still surface the server's
+// text in the typed error. parseErr is set when the body cannot be decoded
+// as JSON or when the "detail" field is empty, making any future callers
+// that depend on structured fields aware of format drift.
+func parseRerankError(body []byte) rerankError {
+	raw := string(body)
+	var wrapper struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return rerankError{raw: raw, parseErr: fmt.Errorf("unmarshal error body: %w", err)}
+	}
+	if wrapper.Detail == "" {
+		return rerankError{raw: raw, parseErr: stderrors.New("error body missing \"detail\" field")}
+	}
+	return rerankError{Detail: wrapper.Detail, raw: raw}
+}
+
 // RoundTrip implements http.RoundTripper by cloning the request and injecting
 // the configured header before delegating to the base transport.
 func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	clone.Header.Set(t.header, t.value)
 	return t.base.RoundTrip(clone)
+}
+
+// newBearerClient wraps the given HTTP client's transport to inject a standard
+// Authorization: Bearer <token> header into every request. Used in platform
+// mode for raw HTTP calls (e.g. Rerank) that bypass the OpenAI SDK.
+func newBearerClient(base *http.Client, token string) *http.Client {
+	transport := base.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	return &http.Client{
+		Timeout: base.Timeout,
+		Transport: &headerTransport{
+			base:   transport,
+			header: "Authorization",
+			value:  bearerPrefix + token,
+		},
+	}
 }
 
 // newHeaderClient wraps the given HTTP client's transport to inject the
