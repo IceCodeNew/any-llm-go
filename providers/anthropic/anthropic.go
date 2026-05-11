@@ -68,6 +68,12 @@ const (
 	schemaFieldRequired   = "required"
 )
 
+// Response format types.
+const (
+	responseFormatJSONObject = "json_object"
+	responseFormatJSONSchema = "json_schema"
+)
+
 // Ensure Provider implements the required interfaces.
 var (
 	_ providers.CapabilityProvider = (*Provider)(nil)
@@ -206,6 +212,8 @@ func (p *Provider) convertParams(params providers.CompletionParams) (anthropic.M
 	if params.ToolChoice != nil {
 		req.ToolChoice = convertToolChoice(params.ToolChoice, params.ParallelToolCalls)
 	}
+
+	applyResponseFormat(&req, params.ResponseFormat)
 
 	applyThinking(&req, params.ReasoningEffort, maxTokens)
 
@@ -387,6 +395,26 @@ func applyThinking(req *anthropic.MessageNewParams, effort providers.ReasoningEf
 	minTokens := budget * 2
 	if maxTokens < minTokens {
 		req.MaxTokens = minTokens
+	}
+}
+
+// applyResponseFormat configures structured output on the request if applicable.
+func applyResponseFormat(req *anthropic.MessageNewParams, format *providers.ResponseFormat) {
+	if format == nil || format.JSONSchema == nil {
+		return
+	}
+	switch format.Type {
+	case responseFormatJSONSchema:
+		// JSONOutputFormatParam only carries Schema and Type; Name, Description, and Strict
+		// from providers.JSONSchema are not supported by the Anthropic API.
+		req.OutputConfig = anthropic.OutputConfigParam{
+			Format: anthropic.JSONOutputFormatParam{
+				Schema: format.JSONSchema.Schema,
+			},
+		}
+	case responseFormatJSONObject:
+		// Anthropic requires a schema for structured output; json_object without a schema
+		// is not supported. No-op to preserve forward compatibility.
 	}
 }
 

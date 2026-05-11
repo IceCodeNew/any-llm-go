@@ -1212,6 +1212,52 @@ func TestIntegrationAuthenticationError(t *testing.T) {
 	require.ErrorAs(t, err, &authErr)
 }
 
+func TestIntegrationCompletionWithStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	if testutil.SkipIfNoAPIKey("anthropic") {
+		t.Skip("ANTHROPIC_API_KEY not set")
+	}
+
+	provider, err := New()
+	require.NoError(t, err)
+
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"answer": map[string]any{"type": "string"},
+		},
+		"required": []any{"answer"},
+	}
+
+	ctx := context.Background()
+	result, err := provider.Completion(ctx, providers.CompletionParams{
+		Model: testutil.TestModel("anthropic"),
+		Messages: []providers.Message{
+			{Role: providers.RoleUser, Content: "What is 2+2? Respond using the provided schema."},
+		},
+		ResponseFormat: &providers.ResponseFormat{
+			Type: responseFormatJSONSchema,
+			JSONSchema: &providers.JSONSchema{
+				Name:   "answer_schema",
+				Schema: schema,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.ID)
+	require.Len(t, result.Choices, 1)
+	require.NotEmpty(t, result.Choices[0].Message.Content)
+
+	contentStr, ok := result.Choices[0].Message.Content.(string)
+	require.True(t, ok, "expected string content")
+
+	var response map[string]any
+	err = json.Unmarshal([]byte(contentStr), &response)
+	require.NoError(t, err, "response should be valid JSON")
+	require.Contains(t, response, "answer", "response should contain 'answer' key")
+}
+
 func TestConvertError(t *testing.T) {
 	t.Parallel()
 
@@ -1286,6 +1332,121 @@ func TestConvertError(t *testing.T) {
 			require.Contains(t, result.Error(), "["+providerName+"]")
 		})
 	}
+}
+
+func TestConvertParams_ResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"answer": map[string]any{"type": "string"},
+		},
+		"required": []any{"answer"},
+	}
+
+	p, err := New(config.WithAPIKey("test-key"))
+	require.NoError(t, err)
+
+	baseParams := func() providers.CompletionParams {
+		return providers.CompletionParams{
+			Model: "claude-3-5-haiku-20241022",
+			Messages: []providers.Message{
+				{Role: providers.RoleUser, Content: []providers.ContentPart{{Text: "hello"}}},
+			},
+		}
+	}
+
+	t.Run("nil ResponseFormat leaves OutputConfig unset", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ResponseFormat = nil
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, anthropic.OutputConfigParam{}, result.OutputConfig)
+	})
+
+	t.Run("json_object type is no-op", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ResponseFormat = &providers.ResponseFormat{Type: responseFormatJSONObject}
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, anthropic.OutputConfigParam{}, result.OutputConfig)
+	})
+
+	t.Run("json_schema with nil JSONSchema is no-op", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ResponseFormat = &providers.ResponseFormat{Type: responseFormatJSONSchema, JSONSchema: nil}
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, anthropic.OutputConfigParam{}, result.OutputConfig)
+	})
+
+	t.Run("json_schema with valid schema sets OutputConfig", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ResponseFormat = &providers.ResponseFormat{
+			Type: responseFormatJSONSchema,
+			JSONSchema: &providers.JSONSchema{
+				Name:   "answer_schema",
+				Schema: schema,
+			},
+		}
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, schema, result.OutputConfig.Format.Schema)
+	})
+
+	t.Run("unsupported JSONSchema fields are not forwarded", func(t *testing.T) {
+		t.Parallel()
+
+		strict := true
+		params := baseParams()
+		params.ResponseFormat = &providers.ResponseFormat{
+			Type: responseFormatJSONSchema,
+			JSONSchema: &providers.JSONSchema{
+				Name:        "answer_schema",
+				Description: "A schema for answers",
+				Strict:      &strict,
+				Schema:      schema,
+			},
+		}
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, schema, result.OutputConfig.Format.Schema)
+		// JSONOutputFormatParam only has Schema and Type fields;
+		// Name, Description, and Strict have no destination.
+		require.Equal(t, anthropic.JSONOutputFormatParam{Schema: schema}, result.OutputConfig.Format)
+	})
+
+	t.Run("streaming path also receives OutputConfig", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.Stream = true
+		params.ResponseFormat = &providers.ResponseFormat{
+			Type: responseFormatJSONSchema,
+			JSONSchema: &providers.JSONSchema{
+				Name:   "answer_schema",
+				Schema: schema,
+			},
+		}
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, schema, result.OutputConfig.Format.Schema)
+	})
 }
 
 // newTestAPIError creates an Anthropic API error for testing.
