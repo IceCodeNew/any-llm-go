@@ -6,7 +6,7 @@ any-llm-go supports multiple LLM providers through a unified interface. Each pro
 
 | Provider                | ID          | Completion | Streaming | Tools | Reasoning | Embeddings | List Models |
 |-------------------------|:------------|:----------:|:---------:|:-----:|:---------:|:----------:|:-----------:|
-| [Anthropic](#anthropic) | `anthropic` |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ❌      |
+| [Anthropic](#anthropic) | `anthropic` |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ✅      |
 | [DeepSeek](#deepseek)   | `deepseek`  |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ✅      |
 | [Gemini](#gemini)       | `gemini`    |     ✅      |     ✅     |   ✅   |     ✅     |     ✅      |      ✅      |
 | [Groq](#groq)           | `groq`      |     ✅      |     ✅     |   ✅   |     ❌     |     ❌      |      ✅      |
@@ -44,6 +44,19 @@ provider, err := anthropic.New(anyllm.WithAPIKey("sk-ant-..."))
 ```
 
 **Environment Variable:** `ANTHROPIC_API_KEY`
+
+Anthropic supports image and PDF content, prompt caching, native Messages calls,
+and Message Batches. A PDF `file` content part accepts an absolute HTTPS URL or
+`data:application/pdf;base64,...`. Set a content part's `cache_control` to type
+`ephemeral` with optional TTL `5m` or `1h`. Cache reads, creation, and creation
+TTL buckets are included in `Usage`.
+
+Signed thinking and opaque redacted-thinking blocks are retained in order in
+`Message.Extra["anthropic"]["thinking_blocks"]` (serialized as `extra_content`). Preserve this JSON
+serializable metadata when replaying assistant messages. For official SDK request
+types, use `provider.Messages` and `provider.MessagesStreaming`, or their beta
+counterparts `provider.BetaMessages` and `provider.BetaMessagesStreaming`.
+Anthropic also implements `anyllm.BatchProvider`.
 
 **Popular Models:**
 - `claude-sonnet-4-20250514` - Latest Sonnet model
