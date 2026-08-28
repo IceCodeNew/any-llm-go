@@ -102,10 +102,12 @@ type (
 
 // Message types.
 type (
-	ContentPart = providers.ContentPart
-	ImageURL    = providers.ImageURL
-	Message     = providers.Message
-	Reasoning   = providers.Reasoning
+	CacheControl = providers.CacheControl
+	ContentPart  = providers.ContentPart
+	File         = providers.File
+	ImageURL     = providers.ImageURL
+	Message      = providers.Message
+	Reasoning    = providers.Reasoning
 )
 
 // Tool types.
