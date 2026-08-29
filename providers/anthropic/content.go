@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/base64"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/mozilla-ai/any-llm-go/errors"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
+
+var errToolCallArgumentsNotObject = stderrors.New("tool call arguments must be a JSON object")
 
 // applyThinking configures thinking/reasoning on the request if applicable.
 // Matches Python any-llm: none disables thinking, empty and auto leave it unset,
@@ -399,9 +402,23 @@ func buildToolParam(tool providers.Tool, schema anthropic.ToolInputSchemaParam) 
 
 // convertToolCall converts a tool call to Anthropic content block format.
 func convertToolCall(tc providers.ToolCall) (anthropic.ContentBlockParamUnion, error) {
-	var input map[string]any
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
-		return anthropic.ContentBlockParamUnion{}, fmt.Errorf("tool call %q has invalid arguments: %w", tc.ID, err)
+	// Anthropic requires tool_use.input to be an object. Empty normalized
+	// arguments therefore encode as an empty object, not null.
+	// https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls
+	input := map[string]any{}
+
+	arguments := strings.TrimSpace(tc.Function.Arguments)
+	if arguments != "" {
+		err := json.Unmarshal([]byte(arguments), &input)
+		if err != nil {
+			return anthropic.ContentBlockParamUnion{}, fmt.Errorf("tool call %q has invalid arguments: %w", tc.ID, err)
+		}
+
+		if input == nil {
+			return anthropic.ContentBlockParamUnion{}, fmt.Errorf(
+				"tool call %q: %w", tc.ID, errToolCallArgumentsNotObject,
+			)
+		}
 	}
 
 	return anthropic.ContentBlockParamUnion{

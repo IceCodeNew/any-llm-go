@@ -504,9 +504,10 @@ func TestConvertToolCall(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		toolCall    providers.ToolCall
-		expectInput bool
+		name      string
+		toolCall  providers.ToolCall
+		wantInput map[string]any
+		wantErr   bool
 	}{
 		{
 			name: "valid JSON arguments",
@@ -518,10 +519,11 @@ func TestConvertToolCall(t *testing.T) {
 					Arguments: `{"location": "Paris"}`,
 				},
 			},
-			expectInput: true,
+			wantInput: map[string]any{"location": "Paris"},
+			wantErr:   false,
 		},
 		{
-			name: "invalid JSON arguments results in nil input",
+			name: "invalid JSON arguments return an error",
 			toolCall: providers.ToolCall{
 				ID:   "call_456",
 				Type: "function",
@@ -530,10 +532,11 @@ func TestConvertToolCall(t *testing.T) {
 					Arguments: `{invalid json`,
 				},
 			},
-			expectInput: false,
+			wantInput: nil,
+			wantErr:   true,
 		},
 		{
-			name: "empty arguments results in nil input",
+			name: "empty arguments become an empty object",
 			toolCall: providers.ToolCall{
 				ID:   "call_789",
 				Type: "function",
@@ -542,7 +545,34 @@ func TestConvertToolCall(t *testing.T) {
 					Arguments: "",
 				},
 			},
-			expectInput: false,
+			wantInput: map[string]any{},
+			wantErr:   false,
+		},
+		{
+			name: "whitespace arguments become an empty object",
+			toolCall: providers.ToolCall{
+				ID:   "call_whitespace",
+				Type: "function",
+				Function: providers.FunctionCall{
+					Name:      "get_weather",
+					Arguments: " \n\t ",
+				},
+			},
+			wantInput: map[string]any{},
+			wantErr:   false,
+		},
+		{
+			name: "null arguments return an error",
+			toolCall: providers.ToolCall{
+				ID:   "call_null",
+				Type: "function",
+				Function: providers.FunctionCall{
+					Name:      "get_weather",
+					Arguments: "null",
+				},
+			},
+			wantInput: nil,
+			wantErr:   true,
 		},
 	}
 
@@ -551,7 +581,7 @@ func TestConvertToolCall(t *testing.T) {
 			t.Parallel()
 
 			result, err := convertToolCall(tc.toolCall)
-			if !tc.expectInput {
+			if tc.wantErr {
 				require.Error(t, err)
 				return
 			}
@@ -560,11 +590,7 @@ func TestConvertToolCall(t *testing.T) {
 			require.Equal(t, tc.toolCall.ID, result.OfToolUse.ID)
 			require.Equal(t, tc.toolCall.Function.Name, result.OfToolUse.Name)
 			require.Equal(t, "tool_use", string(result.OfToolUse.Type))
-			if tc.expectInput {
-				require.NotNil(t, result.OfToolUse.Input)
-			} else {
-				require.Nil(t, result.OfToolUse.Input)
-			}
+			require.Equal(t, tc.wantInput, result.OfToolUse.Input)
 		})
 	}
 }
