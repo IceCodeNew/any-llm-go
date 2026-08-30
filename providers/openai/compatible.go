@@ -368,17 +368,19 @@ func convertAssistantMessage(msg providers.Message, name string) (openai.ChatCom
 		assistant.Content.OfString = openai.String(msg.ContentString())
 	}
 
-	assistant.ToolCalls = make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(msg.ToolCalls))
-	for _, tc := range msg.ToolCalls {
-		assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-			OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-				ID: tc.ID,
-				Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
+	if len(msg.ToolCalls) > 0 {
+		assistant.ToolCalls = make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(msg.ToolCalls))
+		for _, tc := range msg.ToolCalls {
+			assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+				OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+					ID: tc.ID,
+					Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
 				},
-			},
-		})
+			})
+		}
 	}
 	return openai.ChatCompletionMessageParamUnion{OfAssistant: assistant}, nil
 }

@@ -35,6 +35,22 @@ func TestConvertParamsPreservesExplicitEmptyLogitBias(t *testing.T) {
 	require.NotContains(t, body, "logit_bias")
 }
 
+func TestConvertAssistantMessageOmitsAbsentToolCalls(t *testing.T) {
+	t.Parallel()
+
+	message, err := convertAssistantMessage(providers.Message{
+		Role:    providers.RoleAssistant,
+		Content: "plain response",
+	}, providerName)
+	require.NoError(t, err)
+
+	wire, err := json.Marshal(message)
+	require.NoError(t, err)
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.NotContains(t, body, "tool_calls")
+}
+
 func TestConvertAssistantMessagePreservesTextPartsBesideToolCalls(t *testing.T) {
 	t.Parallel()
 
