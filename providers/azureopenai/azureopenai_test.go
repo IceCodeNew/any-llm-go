@@ -109,6 +109,27 @@ func TestNewFromEnvironment(t *testing.T) {
 	require.NotNil(t, provider)
 }
 
+func TestNewAppliesOptionsOnce(t *testing.T) {
+	t.Parallel()
+
+	applied := 0
+	option := func(cfg *config.Config) error {
+		applied++
+
+		err := config.WithAPIKey("test-key")(cfg)
+		if err != nil {
+			return err
+		}
+
+		return config.WithBaseURL("https://example.openai.azure.com")(cfg)
+	}
+
+	provider, err := New(option)
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	require.Equal(t, 1, applied)
+}
+
 func TestNewRequiresAPIKey(t *testing.T) {
 	t.Setenv(envAPIKey, "")
 
@@ -174,6 +195,8 @@ func TestCapabilities(t *testing.T) {
 	require.True(t, caps.ImageGeneration)
 	require.True(t, caps.ListModels)
 	require.True(t, caps.Responses)
+	require.True(t, caps.ResponsesStreaming)
+	require.Implements(t, (*providers.ResponsesProvider)(nil), provider)
 	require.NotImplements(t, (*providers.ModerationProvider)(nil), provider)
 }
 
@@ -451,6 +474,145 @@ func TestResponsesOperationsWireFormat(t *testing.T) {
 	for _, expected := range want {
 		require.Equal(t, expected, <-requests)
 	}
+}
+
+func TestNormalizedResponsesWireFormat(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(normalizedResponsesHandler(t))
+	t.Cleanup(server.Close)
+
+	provider, err := New(
+		config.WithAPIKey("response-key"),
+		config.WithBaseURL(server.URL),
+	)
+	require.NoError(t, err)
+
+	maxTokens := 123
+	result, err := provider.Responses(t.Context(), providers.ResponsesParams{
+		Model:        "deployment",
+		Instructions: "be brief",
+		Input:        []providers.ResponsesInputItem{{Role: providers.RoleUser, Content: "hello"}},
+		MaxTokens:    &maxTokens,
+		Reasoning:    providers.ReasoningEffortMedium,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "resp_azure", result.ID)
+	require.Equal(t, "deployment", result.Model)
+	require.Equal(t, "completed", result.Status)
+	require.Equal(t, "done", result.Output)
+	require.Len(t, result.OutputItems, 3)
+	require.Equal(t, "checked", result.OutputItems[0].Summary)
+	require.Equal(t, "lookup", result.OutputItems[1].Name)
+	require.Equal(t, "call_1", result.OutputItems[1].CallID)
+	require.JSONEq(t, `{"q":"hello"}`, result.OutputItems[1].Arguments)
+	require.Equal(t, "done", result.OutputItems[2].Content)
+}
+
+func normalizedResponsesHandler(t *testing.T) http.Handler {
+	t.Helper()
+
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, http.MethodPost, request.Method)
+		assert.Equal(t, "/openai/v1/responses", request.URL.Path)
+		assert.Empty(t, request.URL.RawQuery)
+		assert.Equal(t, "response-key", request.Header.Get("Api-Key"))
+
+		var body map[string]any
+		if !assert.NoError(t, json.NewDecoder(request.Body).Decode(&body)) {
+			http.Error(writer, "invalid request body", http.StatusBadRequest)
+
+			return
+		}
+
+		assert.Equal(t, "deployment", body["model"])
+		assert.Equal(t, "be brief", body["instructions"])
+		assert.InDelta(t, 123, body["max_output_tokens"], 0)
+		assert.Equal(t, map[string]any{"effort": "medium"}, body["reasoning"])
+		assert.Equal(t, []any{map[string]any{"role": "user", "content": "hello"}}, body["input"])
+
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{
+			"id":"resp_azure",
+			"object":"response",
+			"created_at":1700000000,
+			"model":"deployment",
+			"status":"completed",
+			"output":[
+				{
+					"type":"reasoning","id":"rs_1","status":"completed",
+					"summary":[{"type":"summary_text","text":"checked"}]
+				},
+				{
+					"type":"function_call","id":"fc_1","status":"completed",
+					"call_id":"call_1","name":"lookup","arguments":"{\"q\":\"hello\"}"
+				},
+				{
+					"type":"message","id":"msg_1","status":"completed","role":"assistant",
+					"content":[{"type":"output_text","text":"done","annotations":[],"logprobs":[]}]
+				}
+			]
+		}`)
+	})
+}
+
+func TestNormalizedResponsesValidationDoesNotSend(t *testing.T) {
+	t.Parallel()
+
+	requestSent := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requestSent <- struct{}{}
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := New(config.WithAPIKey("key"), config.WithBaseURL(server.URL))
+	require.NoError(t, err)
+
+	_, err = provider.Responses(t.Context(), providers.ResponsesParams{
+		Input: []providers.ResponsesInputItem{{Role: providers.RoleUser, Content: "hello"}},
+	})
+
+	var invalidErr *errors.InvalidRequestError
+	require.ErrorAs(t, err, &invalidErr)
+
+	_, err = provider.Responses(t.Context(), providers.ResponsesParams{
+		Model:     "deployment",
+		Input:     []providers.ResponsesInputItem{{Role: providers.RoleUser, Content: "hello"}},
+		Reasoning: "unknown",
+	})
+
+	var unsupportedErr *errors.UnsupportedParamError
+	require.ErrorAs(t, err, &unsupportedErr)
+	require.Equal(t, providerName, unsupportedErr.Provider)
+
+	select {
+	case <-requestSent:
+		t.Fatal("unexpected request")
+	default:
+	}
+}
+
+func TestNormalizedResponsesConvertsErrors(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(writer, `{"error":{"message":"slow down"}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := New(config.WithAPIKey("key"), config.WithBaseURL(server.URL))
+	require.NoError(t, err)
+
+	_, err = provider.Responses(t.Context(), providers.ResponsesParams{
+		Model: "deployment",
+		Input: []providers.ResponsesInputItem{{Role: providers.RoleUser, Content: "hello"}},
+	})
+
+	var rateLimitErr *errors.RateLimitError
+	require.ErrorAs(t, err, &rateLimitErr)
+	require.Equal(t, providerName, rateLimitErr.Provider)
 }
 
 func TestResponsesTokenCredentialAuthentication(t *testing.T) {
