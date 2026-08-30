@@ -34,6 +34,7 @@ const (
 
 // Anthropic delta types.
 const (
+	deltaTypeCitations = "citations_delta"
 	deltaTypeInputJSON = "input_json_delta"
 	deltaTypeSignature = "signature_delta"
 	deltaTypeText      = "text_delta"

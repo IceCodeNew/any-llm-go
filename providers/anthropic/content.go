@@ -209,16 +209,22 @@ func convertMessages(messages []providers.Message) ([]anthropic.MessageParam, []
 
 func convertResponseContent(
 	blocks []anthropic.ContentBlockUnion,
-) (string, *providers.Reasoning, []any, []providers.ToolCall) {
+) (string, *providers.Reasoning, []any, []providers.ToolCall, []any) {
 	var content strings.Builder
 	var reasoning *providers.Reasoning
 	thinkingBlocks := make([]any, 0)
 	var toolCalls []providers.ToolCall
 
+	var citations []any
+
 	for _, block := range blocks {
 		switch block.Type {
 		case blockTypeText:
 			content.WriteString(block.Text)
+
+			for _, citation := range block.Citations {
+				citations = append(citations, citation)
+			}
 		case blockTypeThinking:
 			reasoning, thinkingBlocks = appendThinkingBlock(reasoning, thinkingBlocks, block)
 		case blockTypeRedactedThinking:
@@ -231,7 +237,7 @@ func convertResponseContent(
 		}
 	}
 
-	return content.String(), reasoning, thinkingBlocks, toolCalls
+	return content.String(), reasoning, thinkingBlocks, toolCalls, citations
 }
 
 func appendThinkingBlock(
@@ -272,15 +278,27 @@ func responseToolCall(block anthropic.ContentBlockUnion) providers.ToolCall {
 
 // convertResponse converts an Anthropic response to providers format.
 func convertResponse(resp *anthropic.Message) *providers.ChatCompletion {
-	content, reasoning, thinkingBlocks, toolCalls := convertResponseContent(resp.Content)
+	content, reasoning, thinkingBlocks, toolCalls, citations := convertResponseContent(resp.Content)
 	message := providers.Message{
 		Role:      providers.RoleAssistant,
 		Content:   content,
 		ToolCalls: toolCalls,
 		Reasoning: reasoning,
 	}
-	if len(thinkingBlocks) > 0 {
-		message.Extra = map[string]providers.ProviderData{providerName: {"thinking_blocks": thinkingBlocks}}
+
+	if len(thinkingBlocks) > 0 || len(citations) > 0 {
+		providerData := make(providers.ProviderData)
+		if len(thinkingBlocks) > 0 {
+			providerData["thinking_blocks"] = thinkingBlocks
+		}
+
+		if len(citations) > 0 {
+			// Anthropic citations are an open union. Preserve the SDK values rather
+			// than narrowing them to today's variants.
+			providerData["citations"] = citations
+		}
+
+		message.Extra = map[string]providers.ProviderData{providerName: providerData}
 	}
 	if resp.StopDetails.JSON.Type.Valid() {
 		if message.Extra == nil {

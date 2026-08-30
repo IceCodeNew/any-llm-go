@@ -378,6 +378,34 @@ func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 	})
 }
 
+func TestStreamStateHandleCitationDelta(t *testing.T) {
+	t.Parallel()
+
+	var event anthropic.ContentBlockDeltaEvent
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"type":"content_block_delta",
+		"index":2,
+		"delta":{"type":"citations_delta","citation":{
+			"type":"char_location","cited_text":"evidence","document_index":0,
+			"document_title":"source","start_char_index":1,"end_char_index":9
+		}}
+	}`), &event))
+
+	chunk := newStreamState().handleContentBlockDelta(event)
+	require.NotNil(t, chunk)
+	data := chunk.Choices[0].Delta.Extra[providerName]
+	require.Equal(t, int64(2), data["index"])
+	citations, ok := data["citations"].([]any)
+	require.True(t, ok)
+	require.Len(t, citations, 1)
+	citation, ok := citations[0].(anthropic.CitationsDeltaCitationUnion)
+	require.True(t, ok)
+	require.Equal(t, "char_location", citation.Type)
+	require.Equal(t, "evidence", citation.CitedText)
+	require.Equal(t, int64(1), citation.StartCharIndex)
+	require.Equal(t, int64(9), citation.EndCharIndex)
+}
+
 func TestApplyThinking(t *testing.T) {
 	t.Parallel()
 
@@ -1610,6 +1638,38 @@ func TestConvertResponsePreservesThinkingSignature(t *testing.T) {
 	require.Equal(t, "Let me think...", result.Choices[0].Message.Reasoning.Content)
 	require.Equal(t, "sig_abc123", result.Choices[0].Message.Reasoning.Signature)
 	require.Equal(t, "The answer is 42.", result.Choices[0].Message.ContentString())
+}
+
+func TestConvertResponsePreservesTextCitations(t *testing.T) {
+	t.Parallel()
+
+	resp := &anthropic.Message{
+		ID:    "msg_citation",
+		Model: anthropic.Model("claude-test"),
+		Content: []anthropic.ContentBlockUnion{{
+			Type: blockTypeText,
+			Text: "Cited answer.",
+			Citations: []anthropic.TextCitationUnion{{
+				Type:            "page_location",
+				CitedText:       "source text",
+				DocumentIndex:   0,
+				StartPageNumber: 1,
+				EndPageNumber:   2,
+			}},
+		}},
+	}
+
+	result := convertResponse(resp)
+	data := result.Choices[0].Message.Extra[providerName]
+	citations, ok := data["citations"].([]any)
+	require.True(t, ok)
+	require.Len(t, citations, 1)
+	citation, ok := citations[0].(anthropic.TextCitationUnion)
+	require.True(t, ok)
+	require.Equal(t, "page_location", citation.Type)
+	require.Equal(t, "source text", citation.CitedText)
+	require.Equal(t, int64(1), citation.StartPageNumber)
+	require.Equal(t, int64(2), citation.EndPageNumber)
 }
 
 func TestConvertResponseAccumulatesThinkingBlocks(t *testing.T) {

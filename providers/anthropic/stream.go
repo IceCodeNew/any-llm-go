@@ -62,6 +62,18 @@ func (s *streamState) handleContentBlockDelta(event anthropic.ContentBlockDeltaE
 		return &chunk
 	case deltaTypeInputJSON:
 		return s.handleInputJSONDelta(event.Delta.PartialJSON)
+	case deltaTypeCitations:
+		// Anthropic sends citations as first-class content deltas. Keep the SDK
+		// union in provider metadata so every documented citation variant survives.
+		// https://docs.anthropic.com/en/docs/build-with-claude/citations
+		chunk := s.chunk(providers.ChunkDelta{Extra: map[string]providers.ProviderData{
+			providerName: {
+				"citations": []any{event.Delta.Citation},
+				"index":     event.Index,
+			},
+		}})
+
+		return &chunk
 	default:
 		return nil
 	}
