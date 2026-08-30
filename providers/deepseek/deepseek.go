@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"slices"
 
-	oaisdk "github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
+	oaisdk "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
 
 	"github.com/mozilla-ai/any-llm-go/config"
 	"github.com/mozilla-ai/any-llm-go/providers"
@@ -137,27 +137,14 @@ func preprocessParams(params providers.CompletionParams) providers.CompletionPar
 		return params
 	}
 
-	// Return modified params with json_object format.
-	return providers.CompletionParams{
-		Model:             params.Model,
-		Messages:          modifiedMessages,
-		Temperature:       params.Temperature,
-		TopP:              params.TopP,
-		MaxTokens:         params.MaxTokens,
-		Stop:              params.Stop,
-		Stream:            params.Stream,
-		StreamOptions:     params.StreamOptions,
-		Tools:             params.Tools,
-		ToolChoice:        params.ToolChoice,
-		ParallelToolCalls: params.ParallelToolCalls,
-		ResponseFormat: &providers.ResponseFormat{
-			Type: responseFormatJSONObject,
-		},
-		ReasoningEffort: params.ReasoningEffort,
-		Seed:            params.Seed,
-		User:            params.User,
-		Extra:           params.Extra,
+	// Copy the full request before changing the two DeepSeek-specific fields.
+	// This keeps newly added normalized options from disappearing here.
+	result := params
+	result.Messages = modifiedMessages
+	result.ResponseFormat = &providers.ResponseFormat{
+		Type: responseFormatJSONObject,
 	}
+	return result
 }
 
 // transformRequest adjusts the OpenAI SDK request for DeepSeek's API.
@@ -222,15 +209,9 @@ Return the JSON object only, no other text, do not wrap it in `+"```json"+` or `
 	// Create a copy of messages to avoid mutating the original.
 	result := slices.Clone(messages)
 
-	// Update the message, preserving all fields from the original.
-	result[lastUserIdx] = providers.Message{
-		Content:    modifiedContent,
-		Name:       targetMsg.Name,
-		Reasoning:  targetMsg.Reasoning,
-		Role:       targetMsg.Role,
-		ToolCallID: targetMsg.ToolCallID,
-		ToolCalls:  targetMsg.ToolCalls,
-	}
+	// Update a copy of the message so provider metadata and future fields survive.
+	result[lastUserIdx] = targetMsg
+	result[lastUserIdx].Content = modifiedContent
 
 	return result, true
 }

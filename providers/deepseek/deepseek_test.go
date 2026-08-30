@@ -154,14 +154,25 @@ func TestPreprocessParams(t *testing.T) {
 		t.Parallel()
 
 		temp := 0.7
+		frequencyPenalty := 0.1
+		logprobs := false
 		maxTokens := 100
+		n := 2
+		presencePenalty := 0.2
+		store := false
+		topLogprobs := 0
 		params := providers.CompletionParams{
-			Model: "deepseek-chat",
+			FrequencyPenalty: &frequencyPenalty,
+			LogitBias:        map[string]int{"42": -1},
+			Logprobs:         &logprobs,
+			Model:            "deepseek-chat",
 			Messages: []providers.Message{
 				{Role: providers.RoleUser, Content: "Test"},
 			},
-			Temperature: &temp,
-			MaxTokens:   &maxTokens,
+			N:               &n,
+			PresencePenalty: &presencePenalty,
+			Temperature:     &temp,
+			MaxTokens:       &maxTokens,
 			ResponseFormat: &providers.ResponseFormat{
 				Type: responseFormatJSONSchema,
 				JSONSchema: &providers.JSONSchema{
@@ -169,13 +180,16 @@ func TestPreprocessParams(t *testing.T) {
 					Schema: map[string]any{"type": "object"},
 				},
 			},
+			Store:       &store,
+			TopLogprobs: &topLogprobs,
 		}
 
 		result := preprocessParams(params)
 
-		require.Equal(t, params.Model, result.Model)
-		require.Equal(t, params.Temperature, result.Temperature)
-		require.Equal(t, params.MaxTokens, result.MaxTokens)
+		expected := params
+		expected.Messages = result.Messages
+		expected.ResponseFormat = result.ResponseFormat
+		require.Equal(t, expected, result)
 	})
 
 	t.Run("returns original params when no user message for schema injection", func(t *testing.T) {
