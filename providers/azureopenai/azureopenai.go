@@ -20,6 +20,7 @@ import (
 	"github.com/mozilla-ai/any-llm-go/config"
 	"github.com/mozilla-ai/any-llm-go/errors"
 	"github.com/mozilla-ai/any-llm-go/providers"
+	"github.com/mozilla-ai/any-llm-go/providers/internal/openairesponses"
 	anyopenai "github.com/mozilla-ai/any-llm-go/providers/openai"
 )
 
@@ -41,6 +42,7 @@ var (
 	_ providers.ErrorConverter     = (*Provider)(nil)
 	_ providers.ModelLister        = (*Provider)(nil)
 	_ providers.Provider           = (*Provider)(nil)
+	_ providers.ResponsesProvider  = (*Provider)(nil)
 )
 
 // Provider implements the providers.Provider interface for Azure OpenAI.
@@ -101,12 +103,12 @@ func New(opts ...config.Option) (*Provider, error) {
 		BaseURLEnvVar:  envBaseURL,
 		Capabilities:   capabilities(),
 		ClientOptions:  clientOptions,
-		DefaultAPIKey:  "",
-		DefaultBaseURL: "",
+		DefaultAPIKey:  auth.apiKey,
+		DefaultBaseURL: endpoint,
 		Name:           providerName,
 		RequireAPIKey:  false,
 		RequireBaseURL: true,
-	}, opts...)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create compatible provider: %w", err)
 	}
@@ -212,6 +214,7 @@ func capabilities() providers.Capabilities {
 		ImageGeneration:     true,
 		ListModels:          true,
 		Responses:           true,
+		ResponsesStreaming:  true,
 	}
 }
 
@@ -254,6 +257,23 @@ func (p *Provider) GenerateImage(
 		return nil, fmt.Errorf("generate image: %w", p.ConvertError(err))
 	}
 	return resp, nil
+}
+
+// Responses implements the provider-neutral Responses interface. Azure's v1
+// API uses the official OpenAI SDK route and supports the same streaming form:
+// https://learn.microsoft.com/azure/foundry/openai/how-to/responses
+func (p *Provider) Responses(
+	ctx context.Context,
+	params providers.ResponsesParams,
+) (*providers.ResponsesResult, error) {
+	// The helper returns provider-neutral validation and API errors unchanged.
+	return openairesponses.Create( //nolint:wrapcheck
+		ctx,
+		&p.client,
+		providerName,
+		p.ConvertError,
+		params,
+	)
 }
 
 // CreateResponse creates a response using the resource-level Responses endpoint.
