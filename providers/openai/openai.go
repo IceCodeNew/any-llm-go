@@ -9,16 +9,20 @@ import (
 const (
 	defaultBaseURL = "https://api.openai.com/v1"
 	envAPIKey      = "OPENAI_API_KEY"
+	envBaseURL     = "OPENAI_BASE_URL"
 	providerName   = "openai"
 )
 
 // Ensure Provider implements the required interfaces.
 var (
 	_ providers.CapabilityProvider = (*Provider)(nil)
+	_ providers.BatchProvider      = (*Provider)(nil)
 	_ providers.EmbeddingProvider  = (*Provider)(nil)
 	_ providers.ErrorConverter     = (*Provider)(nil)
 	_ providers.ModelLister        = (*Provider)(nil)
+	_ providers.ModerationProvider = (*Provider)(nil)
 	_ providers.Provider           = (*Provider)(nil)
+	_ providers.ResponsesProvider  = (*Provider)(nil)
 )
 
 // Provider implements the providers.Provider interface for OpenAI.
@@ -31,6 +35,7 @@ type Provider struct {
 func New(opts ...config.Option) (*Provider, error) {
 	base, err := NewCompatible(CompatibleConfig{
 		APIKeyEnvVar:   envAPIKey,
+		BaseURLEnvVar:  envBaseURL,
 		Capabilities:   capabilities(),
 		DefaultBaseURL: defaultBaseURL,
 		Name:           providerName,
@@ -46,6 +51,9 @@ func New(opts ...config.Option) (*Provider, error) {
 // capabilities returns the capabilities for the OpenAI provider.
 func capabilities() providers.Capabilities {
 	return providers.Capabilities{
+		AudioSpeech:         true,
+		AudioTranscription:  true,
+		Batch:               true,
 		Completion:          true,
 		CompletionImage:     true,
 		CompletionPDF:       false,
@@ -53,6 +61,11 @@ func capabilities() providers.Capabilities {
 		CompletionStreaming: true,
 		CompletionTools:     true,
 		Embedding:           true,
+		Files:               true,
+		ImageGeneration:     true,
 		ListModels:          true,
+		Moderation:          true,
+		Responses:           true,
+		ResponsesStreaming:  true,
 	}
 }
