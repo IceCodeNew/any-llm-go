@@ -301,6 +301,37 @@ func TestStreamStateHandleThinkingDelta(t *testing.T) {
 	require.Equal(t, "Let me think...", state.reasoning.String())
 }
 
+func TestStreamStateHandleToolUseStart(t *testing.T) {
+	t.Parallel()
+
+	const toolCallID = "call_1"
+
+	state := newStreamState()
+	state.messageID = "msg_123"
+	state.model = "claude-3"
+
+	chunk := state.handleContentBlockStart(anthropic.ContentBlockStartEvent{
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: blockTypeToolUse,
+			ID:   toolCallID,
+			Name: "get_weather",
+		},
+	})
+
+	expected := providers.ToolCall{
+		ID:   toolCallID,
+		Type: "function",
+		Function: providers.FunctionCall{
+			Name: "get_weather",
+		},
+	}
+
+	require.NotNil(t, chunk)
+	require.Equal(t, 0, state.currentToolIdx)
+	require.Equal(t, []providers.ToolCall{expected}, state.toolCalls)
+	require.Equal(t, []providers.ToolCall{expected}, chunk.Choices[0].Delta.ToolCalls)
+}
+
 func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 	t.Parallel()
 

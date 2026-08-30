@@ -94,6 +94,9 @@ func (s *streamState) handleContentBlockStart(event anthropic.ContentBlockStartE
 			},
 		}
 		s.toolCalls = append(s.toolCalls, tc)
+		chunk := s.chunk(providers.ChunkDelta{ToolCalls: []providers.ToolCall{tc}})
+
+		return &chunk
 	}
 	return nil
 }
