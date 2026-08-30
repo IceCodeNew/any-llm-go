@@ -20,11 +20,13 @@ import (
 
 // Provider configuration constants.
 const (
-	defaultBaseURL = "https://api.z.ai/api/paas/v4/"
-	envAPIKey      = "ZAI_API_KEY"
-	providerName   = "zai"
-	dataURIPrefix  = "data:image/"
-	base64Prefix   = "base64,"
+	defaultBaseURL     = "https://api.z.ai/api/paas/v4/"
+	envAPIKey          = "ZAI_API_KEY"
+	providerName       = "zai"
+	dataURIPrefix      = "data:image/"
+	base64Prefix       = "base64,"
+	initialStreamBytes = 64 * 1024
+	maxStreamLineBytes = 1024 * 1024
 )
 
 // Object type constants.
@@ -32,6 +34,10 @@ const (
 	objectChatCompletion      = "chat.completion"
 	objectChatCompletionChunk = "chat.completion.chunk"
 	objectList                = "list"
+	thinkingDisabled          = "disabled"
+	thinkingEnabled           = "enabled"
+	responseFormatJSONObject  = "json_object"
+	responseFormatText        = "text"
 )
 
 // Ensure Provider implements the required interfaces.
@@ -151,6 +157,7 @@ func (p *Provider) CompletionStream(
 		}()
 
 		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, initialStreamBytes), maxStreamLineBytes)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if len(line) == 0 {
@@ -255,9 +262,20 @@ func (p *Provider) createRequest(params providers.CompletionParams, stream bool)
 		Stop:        params.Stop,
 		UserID:      params.User,
 	}
+	if params.ResponseFormat != nil {
+		// Z.AI text models accept only text and json_object response formats.
+		// https://docs.z.ai/api-reference/llm/chat-completion
+		switch params.ResponseFormat.Type {
+		case responseFormatText, responseFormatJSONObject:
+			req.ResponseFormat = &responseFormatParam{Type: params.ResponseFormat.Type}
+		default:
+			return nil, errors.NewInvalidRequestError(providerName,
+				fmt.Errorf("response_format.type must be %q or %q", responseFormatText, responseFormatJSONObject))
+		}
+	}
 
-	if params.ReasoningEffort != "" && params.ReasoningEffort != providers.ReasoningEffortNone {
-		req.Thinking = &thinkingParam{Type: "enabled"}
+	if err := applyReasoning(req, params.ReasoningEffort); err != nil {
+		return nil, err
 	}
 
 	msgs := make([]messageParam, len(params.Messages))
@@ -303,6 +321,47 @@ func (p *Provider) createRequest(params providers.CompletionParams, stream bool)
 	req.Messages = msgs
 
 	return req, nil
+}
+
+func applyReasoning(req *chatRequest, effort providers.ReasoningEffort) error {
+	switch effort {
+	case "", providers.ReasoningEffortAuto:
+		return nil
+	case providers.ReasoningEffortNone, providers.ReasoningEffortMinimal,
+		providers.ReasoningEffortLow, providers.ReasoningEffortMedium,
+		providers.ReasoningEffortHigh, providers.ReasoningEffortXHigh,
+		providers.ReasoningEffortMax:
+	default:
+		return errors.NewUnsupportedParamError(providerName, "reasoning_effort")
+	}
+
+	model := strings.ToLower(req.Model)
+	if separator := strings.LastIndexByte(model, '/'); separator >= 0 {
+		model = model[separator+1:]
+	}
+
+	// Z.AI documents a model-specific contract. GLM-5.3 accepts only low,
+	// high, and max and cannot disable thinking. GLM-5.2 accepts the full
+	// normalized vocabulary, including none. Older models expose a binary
+	// enabled/disabled switch.
+	// https://docs.z.ai/guides/capabilities/thinking
+	switch {
+	case strings.HasPrefix(model, "glm-5.3"):
+		if effort != providers.ReasoningEffortLow &&
+			effort != providers.ReasoningEffortHigh &&
+			effort != "max" {
+			return errors.NewUnsupportedParamError(providerName, "reasoning_effort")
+		}
+		req.ReasoningEffort = effort
+	case strings.HasPrefix(model, "glm-5.2"):
+		req.ReasoningEffort = effort
+	case effort == providers.ReasoningEffortNone || effort == "minimal":
+		req.Thinking = &thinkingParam{Type: thinkingDisabled}
+	default:
+		req.Thinking = &thinkingParam{Type: thinkingEnabled}
+	}
+
+	return nil
 }
 
 // doRequest sends an HTTP request to the z.ai API.
@@ -380,12 +439,45 @@ func (p *Provider) handleErrorResponse(resp *http.Response) error {
 
 // zaiChatCompletion represents a z.ai chat completion response.
 type zaiChatCompletion struct {
-	ID      string           `json:"id"`
-	Object  string           `json:"object"`
-	Created int64            `json:"created"`
-	Model   string           `json:"model"`
-	Choices []zaiChoice      `json:"choices"`
-	Usage   *providers.Usage `json:"usage,omitempty"`
+	ID        string          `json:"id"`
+	Object    string          `json:"object"`
+	Created   int64           `json:"created"`
+	Model     string          `json:"model"`
+	Choices   []zaiChoice     `json:"choices"`
+	Usage     *zaiUsage       `json:"usage,omitempty"`
+	RequestID *string         `json:"request_id,omitempty"`
+	WebSearch json.RawMessage `json:"web_search,omitempty"`
+}
+
+type zaiUsage struct {
+	providers.Usage
+
+	PromptTokensDetails *zaiPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+type zaiPromptTokensDetails struct {
+	CachedTokens *int `json:"cached_tokens,omitempty"`
+}
+
+func (z *zaiChatCompletion) providerExtra() map[string]providers.ProviderData {
+	metadata := make(providers.ProviderData)
+	if z.RequestID != nil {
+		metadata["request_id"] = *z.RequestID
+	}
+	if z.WebSearch != nil {
+		metadata["web_search"] = z.WebSearch
+	}
+	if z.Usage != nil && z.Usage.PromptTokensDetails != nil && z.Usage.PromptTokensDetails.CachedTokens != nil {
+		metadata["usage"] = providers.ProviderData{
+			"prompt_tokens_details": providers.ProviderData{
+				"cached_tokens": *z.Usage.PromptTokensDetails.CachedTokens,
+			},
+		}
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return map[string]providers.ProviderData{providerName: metadata}
 }
 
 // zaiChoice represents a choice in a z.ai chat completion response.
@@ -398,7 +490,7 @@ type zaiChoice struct {
 // zaiMessage represents a message in a z.ai chat completion response.
 type zaiMessage struct {
 	providers.Message
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 // toProviderCompletion converts a z.ai response to the unified ChatCompletion format.
@@ -406,9 +498,10 @@ func (z *zaiChatCompletion) toProviderCompletion() *providers.ChatCompletion {
 	choices := make([]providers.Choice, len(z.Choices))
 	for i, c := range z.Choices {
 		msg := c.Message.Message
-		if c.Message.ReasoningContent != "" {
+		msg.Extra = z.providerExtra()
+		if c.Message.ReasoningContent != nil {
 			msg.Reasoning = &providers.Reasoning{
-				Content: c.Message.ReasoningContent,
+				Content: *c.Message.ReasoningContent,
 			}
 		}
 		choices[i] = providers.Choice{
@@ -423,18 +516,25 @@ func (z *zaiChatCompletion) toProviderCompletion() *providers.ChatCompletion {
 		Created: z.Created,
 		Model:   z.Model,
 		Choices: choices,
-		Usage:   z.Usage,
+		Usage: func() *providers.Usage {
+			if z.Usage == nil {
+				return nil
+			}
+			return &z.Usage.Usage
+		}(),
 	}
 }
 
 // zaiChatCompletionChunk represents a z.ai streaming chunk.
 type zaiChatCompletionChunk struct {
-	ID      string           `json:"id"`
-	Object  string           `json:"object"`
-	Created int64            `json:"created"`
-	Model   string           `json:"model"`
-	Choices []zaiChunkChoice `json:"choices"`
-	Usage   *providers.Usage `json:"usage,omitempty"`
+	ID        string           `json:"id"`
+	Object    string           `json:"object"`
+	Created   int64            `json:"created"`
+	Model     string           `json:"model"`
+	Choices   []zaiChunkChoice `json:"choices"`
+	Usage     *zaiUsage        `json:"usage,omitempty"`
+	RequestID *string          `json:"request_id,omitempty"`
+	WebSearch json.RawMessage  `json:"web_search,omitempty"`
 }
 
 // zaiChunkChoice represents a choice in a z.ai streaming chunk.
@@ -447,7 +547,7 @@ type zaiChunkChoice struct {
 // zaiChunkDelta represents delta content in a z.ai streaming chunk.
 type zaiChunkDelta struct {
 	providers.ChunkDelta
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 // toProviderChunk converts a z.ai streaming chunk to the unified ChatCompletionChunk format.
@@ -455,9 +555,11 @@ func (z *zaiChatCompletionChunk) toProviderChunk() providers.ChatCompletionChunk
 	choices := make([]providers.ChunkChoice, len(z.Choices))
 	for i, c := range z.Choices {
 		delta := c.Delta.ChunkDelta
-		if c.Delta.ReasoningContent != "" {
+		metadataSource := zaiChatCompletion{RequestID: z.RequestID, WebSearch: z.WebSearch, Usage: z.Usage}
+		delta.Extra = metadataSource.providerExtra()
+		if c.Delta.ReasoningContent != nil {
 			delta.Reasoning = &providers.Reasoning{
-				Content: c.Delta.ReasoningContent,
+				Content: *c.Delta.ReasoningContent,
 			}
 		}
 		choices[i] = providers.ChunkChoice{
@@ -472,7 +574,12 @@ func (z *zaiChatCompletionChunk) toProviderChunk() providers.ChatCompletionChunk
 		Created: z.Created,
 		Model:   z.Model,
 		Choices: choices,
-		Usage:   z.Usage,
+		Usage: func() *providers.Usage {
+			if z.Usage == nil {
+				return nil
+			}
+			return &z.Usage.Usage
+		}(),
 	}
 }
 
@@ -480,17 +587,23 @@ func (z *zaiChatCompletionChunk) toProviderChunk() providers.ChatCompletionChunk
 
 // chatRequest represents a z.ai chat completion request body.
 type chatRequest struct {
-	Model       string           `json:"model"`
-	Messages    []messageParam   `json:"messages"`
-	Stream      bool             `json:"stream,omitempty"`
-	Thinking    *thinkingParam   `json:"thinking,omitempty"`
-	Tools       []providers.Tool `json:"tools,omitempty"`
-	ToolChoice  any              `json:"tool_choice,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	TopP        *float64         `json:"top_p,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
-	Stop        []string         `json:"stop,omitempty"`
-	UserID      string           `json:"user_id,omitempty"`
+	Model           string                    `json:"model"`
+	Messages        []messageParam            `json:"messages"`
+	Stream          bool                      `json:"stream,omitempty"`
+	Thinking        *thinkingParam            `json:"thinking,omitempty"`
+	ReasoningEffort providers.ReasoningEffort `json:"reasoning_effort,omitempty"`
+	Tools           []providers.Tool          `json:"tools,omitempty"`
+	ToolChoice      any                       `json:"tool_choice,omitempty"`
+	Temperature     *float64                  `json:"temperature,omitempty"`
+	TopP            *float64                  `json:"top_p,omitempty"`
+	MaxTokens       *int                      `json:"max_tokens,omitempty"`
+	Stop            []string                  `json:"stop,omitempty"`
+	UserID          string                    `json:"user_id,omitempty"`
+	ResponseFormat  *responseFormatParam      `json:"response_format,omitempty"`
+}
+
+type responseFormatParam struct {
+	Type string `json:"type"`
 }
 
 // thinkingParam represents the thinking configuration for z.ai.

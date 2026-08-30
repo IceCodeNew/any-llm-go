@@ -223,10 +223,10 @@ func TestCreateRequest(t *testing.T) {
 		req, err := p.createRequest(params, false)
 		require.NoError(t, err)
 		require.NotNil(t, req.Thinking)
-		require.Equal(t, "enabled", req.Thinking.Type)
+		require.Equal(t, thinkingEnabled, req.Thinking.Type)
 	})
 
-	t.Run("does not enable thinking for ReasoningEffortNone", func(t *testing.T) {
+	t.Run("disables thinking for ReasoningEffortNone", func(t *testing.T) {
 		t.Parallel()
 
 		p := &Provider{}
@@ -240,7 +240,53 @@ func TestCreateRequest(t *testing.T) {
 
 		req, err := p.createRequest(params, false)
 		require.NoError(t, err)
+		require.NotNil(t, req.Thinking)
+		require.Equal(t, thinkingDisabled, req.Thinking.Type)
+	})
+
+	t.Run("preserves GLM 5.2 none reasoning effort", func(t *testing.T) {
+		t.Parallel()
+
+		p := &Provider{}
+		params := providers.CompletionParams{
+			Model: "glm-5.2",
+			Messages: []providers.Message{
+				{Role: providers.RoleUser, Content: "Hello"},
+			},
+			ReasoningEffort: providers.ReasoningEffortNone,
+		}
+
+		req, err := p.createRequest(params, false)
+		require.NoError(t, err)
 		require.Nil(t, req.Thinking)
+		require.Equal(t, providers.ReasoningEffortNone, req.ReasoningEffort)
+	})
+
+	t.Run("rejects unsupported GLM 5.3 reasoning effort", func(t *testing.T) {
+		t.Parallel()
+
+		p := &Provider{}
+		params := providers.CompletionParams{
+			Model: "glm-5.3",
+			Messages: []providers.Message{
+				{Role: providers.RoleUser, Content: "Hello"},
+			},
+			ReasoningEffort: providers.ReasoningEffortNone,
+		}
+
+		_, err := p.createRequest(params, false)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
+	})
+
+	t.Run("rejects unknown reasoning effort for older models", func(t *testing.T) {
+		t.Parallel()
+
+		p := &Provider{}
+		_, err := p.createRequest(providers.CompletionParams{
+			Model:           testutil.ReasoningModel(providerName),
+			ReasoningEffort: "invalid",
+		}, false)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
 	})
 
 	t.Run("preserves reasoning_content from history", func(t *testing.T) {
@@ -439,11 +485,11 @@ func TestToProviderCompletion(t *testing.T) {
 					FinishReason: "stop",
 				},
 			},
-			Usage: &providers.Usage{
+			Usage: &zaiUsage{Usage: providers.Usage{
 				PromptTokens:     10,
 				CompletionTokens: 5,
 				TotalTokens:      15,
-			},
+			}},
 		}
 
 		result := zaiResp.toProviderCompletion()
@@ -476,7 +522,7 @@ func TestToProviderCompletion(t *testing.T) {
 							Role:    providers.RoleAssistant,
 							Content: "The answer is 42.",
 						},
-						ReasoningContent: "Let me think step by step...",
+						ReasoningContent: new("Let me think step by step..."),
 					},
 					FinishReason: "stop",
 				},
@@ -556,6 +602,73 @@ func TestToProviderCompletion(t *testing.T) {
 	})
 }
 
+func TestCreateRequestResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	p := &Provider{}
+	for _, formatType := range []string{responseFormatText, responseFormatJSONObject} {
+		req, err := p.createRequest(
+			providers.CompletionParams{ResponseFormat: &providers.ResponseFormat{Type: formatType}},
+			false,
+		)
+		require.NoError(t, err)
+		require.Equal(t, formatType, req.ResponseFormat.Type)
+	}
+
+	_, err := p.createRequest(
+		providers.CompletionParams{ResponseFormat: &providers.ResponseFormat{Type: "json_schema"}},
+		false,
+	)
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+}
+
+func TestZAIResponseMetadataPreservesZeroValues(t *testing.T) {
+	t.Parallel()
+
+	var response zaiChatCompletion
+	err := json.Unmarshal([]byte(`{
+		"choices":[{"message":{"role":"assistant","content":""}}],
+		"request_id":"","web_search":[],
+		"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,
+			"prompt_tokens_details":{"cached_tokens":0}}
+	}`), &response)
+	require.NoError(t, err)
+
+	result := response.toProviderCompletion()
+	metadata := result.Choices[0].Message.Extra[providerName]
+	require.Empty(t, metadata["request_id"])
+	webSearch, ok := metadata["web_search"].(json.RawMessage)
+	require.True(t, ok)
+	require.JSONEq(t, `[]`, string(webSearch))
+	usage, ok := metadata["usage"].(providers.ProviderData)
+	require.True(t, ok)
+	promptTokenDetails, ok := usage["prompt_tokens_details"].(providers.ProviderData)
+	require.True(t, ok)
+	require.Equal(t, 0, promptTokenDetails["cached_tokens"])
+	require.Zero(t, result.Usage.TotalTokens)
+
+	wire, err := json.Marshal(result)
+	require.NoError(t, err)
+	var restored providers.ChatCompletion
+	require.NoError(t, json.Unmarshal(wire, &restored))
+	restoredMetadata := restored.Choices[0].Message.Extra[providerName]
+	require.Equal(t, "", restoredMetadata["request_id"])
+	require.Equal(t, []any{}, restoredMetadata["web_search"])
+}
+
+func TestZAIResponsePreservesExplicitEmptyReasoning(t *testing.T) {
+	t.Parallel()
+
+	var response zaiChatCompletion
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":""}}]
+	}`), &response))
+
+	result := response.toProviderCompletion()
+	require.NotNil(t, result.Choices[0].Message.Reasoning)
+	require.Empty(t, result.Choices[0].Message.Reasoning.Content)
+}
+
 func TestToProviderChunk(t *testing.T) {
 	t.Parallel()
 
@@ -603,7 +716,7 @@ func TestToProviderChunk(t *testing.T) {
 				{
 					Index: 0,
 					Delta: zaiChunkDelta{
-						ReasoningContent: "Thinking...",
+						ReasoningContent: new("Thinking..."),
 					},
 				},
 			},
@@ -631,11 +744,11 @@ func TestToProviderChunk(t *testing.T) {
 					FinishReason: "stop",
 				},
 			},
-			Usage: &providers.Usage{
+			Usage: &zaiUsage{Usage: providers.Usage{
 				PromptTokens:     10,
 				CompletionTokens: 20,
 				TotalTokens:      30,
-			},
+			}},
 		}
 
 		result := zaiChunk.toProviderChunk()
@@ -678,6 +791,51 @@ func TestToProviderChunk(t *testing.T) {
 		require.Len(t, result.Choices[0].Delta.ToolCalls, 1)
 		require.Equal(t, "get_weather", result.Choices[0].Delta.ToolCalls[0].Function.Name)
 	})
+}
+
+func TestZAIStreamMetadataUsesDeltaExtra(t *testing.T) {
+	t.Parallel()
+
+	requestID := ""
+	cachedTokens := 0
+	chunk := zaiChatCompletionChunk{
+		RequestID: &requestID,
+		WebSearch: json.RawMessage(`[]`),
+		Usage:     &zaiUsage{PromptTokensDetails: &zaiPromptTokensDetails{CachedTokens: &cachedTokens}},
+		Choices:   []zaiChunkChoice{{Delta: zaiChunkDelta{}}},
+	}
+
+	metadata := chunk.toProviderChunk().Choices[0].Delta.Extra[providerName]
+	require.Empty(t, metadata["request_id"])
+	webSearch, ok := metadata["web_search"].(json.RawMessage)
+	require.True(t, ok)
+	require.JSONEq(t, `[]`, string(webSearch))
+	usage, ok := metadata["usage"].(providers.ProviderData)
+	require.True(t, ok)
+	promptTokenDetails, ok := usage["prompt_tokens_details"].(providers.ProviderData)
+	require.True(t, ok)
+	require.Equal(t, 0, promptTokenDetails["cached_tokens"])
+
+	wire, err := json.Marshal(chunk.toProviderChunk())
+	require.NoError(t, err)
+	var restored providers.ChatCompletionChunk
+	require.NoError(t, json.Unmarshal(wire, &restored))
+	restoredMetadata := restored.Choices[0].Delta.Extra[providerName]
+	require.Equal(t, "", restoredMetadata["request_id"])
+	require.Equal(t, []any{}, restoredMetadata["web_search"])
+}
+
+func TestZAIStreamPreservesExplicitEmptyReasoning(t *testing.T) {
+	t.Parallel()
+
+	var chunk zaiChatCompletionChunk
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":""}}]
+	}`), &chunk))
+
+	result := chunk.toProviderChunk()
+	require.NotNil(t, result.Choices[0].Delta.Reasoning)
+	require.Empty(t, result.Choices[0].Delta.Reasoning.Content)
 }
 
 func TestConvertError(t *testing.T) {
