@@ -66,6 +66,47 @@ func TestCapabilities(t *testing.T) {
 	require.True(t, caps.ListModels)
 }
 
+func TestConvertParamsPreservesSupportedReasoningControls(t *testing.T) {
+	t.Parallel()
+
+	provider := &Provider{}
+	for _, testCase := range []struct {
+		name   string
+		effort providers.ReasoningEffort
+		want   any
+	}{
+		{name: "none", effort: providers.ReasoningEffortNone, want: false},
+		{name: "low", effort: providers.ReasoningEffortLow, want: "low"},
+		{name: "medium", effort: providers.ReasoningEffortMedium, want: "medium"},
+		{name: "high", effort: providers.ReasoningEffortHigh, want: "high"},
+		{name: "max", effort: providers.ReasoningEffortMax, want: "max"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := provider.convertParams(providers.CompletionParams{ReasoningEffort: testCase.effort})
+			require.NoError(t, err)
+			require.Equal(t, testCase.want, req.Think.Value)
+		})
+	}
+}
+
+func TestConvertParamsOmitsAutoAndRejectsUnsupportedReasoningControls(t *testing.T) {
+	t.Parallel()
+
+	provider := &Provider{}
+	req, err := provider.convertParams(providers.CompletionParams{ReasoningEffort: providers.ReasoningEffortAuto})
+	require.NoError(t, err)
+	require.Nil(t, req.Think)
+
+	for _, effort := range []providers.ReasoningEffort{
+		providers.ReasoningEffortMinimal,
+		providers.ReasoningEffortXHigh,
+	} {
+		_, err = provider.convertParams(providers.CompletionParams{ReasoningEffort: effort})
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
+	}
+}
+
 func TestConvertMessages(t *testing.T) {
 	t.Parallel()
 
@@ -76,7 +117,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleSystem, Content: "You are a helpful assistant."},
 		}
 
-		result := convertMessages(messages)
+		result, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 1)
 		require.Equal(t, providers.RoleSystem, result[0].Role)
@@ -90,7 +132,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		result := convertMessages(messages)
+		result, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 1)
 		require.Equal(t, providers.RoleUser, result[0].Role)
@@ -104,7 +147,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleAssistant, Content: "Hi there!"},
 		}
 
-		result := convertMessages(messages)
+		result, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 1)
 		require.Equal(t, providers.RoleAssistant, result[0].Role)
@@ -118,7 +162,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleTool, Content: "sunny, 22°C", ToolCallID: "call_123"},
 		}
 
-		result := convertMessages(messages)
+		result, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 1)
 		require.Equal(t, providers.RoleUser, result[0].Role) // Ollama uses user for tool results.
@@ -144,12 +189,28 @@ func TestConvertMessages(t *testing.T) {
 			},
 		}
 
-		result := convertMessages(messages)
+		result, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 1)
 		require.Equal(t, providers.RoleAssistant, result[0].Role)
 		require.Len(t, result[0].ToolCalls, 1)
+		require.Equal(t, "call_123", result[0].ToolCalls[0].ID)
 		require.Equal(t, "get_weather", result[0].ToolCalls[0].Function.Name)
+	})
+
+	t.Run("rejects invalid assistant tool arguments", func(t *testing.T) {
+		t.Parallel()
+
+		for _, arguments := range []string{"invalid", "null", "[]", `"value"`, "0", "false"} {
+			_, err := convertMessages([]providers.Message{{
+				Role: providers.RoleAssistant,
+				ToolCalls: []providers.ToolCall{{
+					Function: providers.FunctionCall{Name: "lookup", Arguments: arguments},
+				}},
+			}})
+			require.ErrorIs(t, err, errors.ErrInvalidRequest)
+		}
 	})
 }
 
@@ -212,7 +273,8 @@ func TestExtractImages(t *testing.T) {
 			},
 		}
 
-		images := extractImages(msg)
+		images, err := extractImages(msg)
+		require.NoError(t, err)
 
 		require.Len(t, images, 1)
 		require.Equal(t, "/9j/4AAQSkZJRg==", string(images[0]))
@@ -233,9 +295,30 @@ func TestExtractImages(t *testing.T) {
 			},
 		}
 
-		images := extractImages(msg)
+		images, err := extractImages(msg)
 
-		require.Empty(t, images)
+		require.Nil(t, images)
+		require.ErrorIs(t, err, errors.ErrInvalidRequest)
+	})
+
+	t.Run("rejects malformed and missing images", func(t *testing.T) {
+		t.Parallel()
+
+		for _, imageURL := range []*providers.ImageURL{
+			nil,
+			{URL: "data:image/png,not-base64"},
+			{URL: "data:image/png;base64,%%%"},
+		} {
+			images, err := extractImages(
+				providers.Message{Content: []providers.ContentPart{{Type: contentTypeImageURL, ImageURL: imageURL}}},
+			)
+			require.Nil(t, images)
+			require.ErrorIs(t, err, errors.ErrInvalidRequest)
+		}
+
+		images, err := extractImages(providers.Message{Content: []providers.ContentPart{{Type: "input_image"}}})
+		require.Nil(t, images)
+		require.ErrorIs(t, err, errors.ErrInvalidRequest)
 	})
 }
 
@@ -279,6 +362,7 @@ func TestConvertToolCalls(t *testing.T) {
 
 	toolCalls := []api.ToolCall{
 		{
+			ID: "provider-call-id",
 			Function: api.ToolCallFunction{
 				Name:      "get_weather",
 				Arguments: args,
@@ -289,7 +373,7 @@ func TestConvertToolCalls(t *testing.T) {
 	result := convertToolCalls(toolCalls)
 
 	require.Len(t, result, 1)
-	require.Equal(t, "call_0", result[0].ID)
+	require.Equal(t, "provider-call-id", result[0].ID)
 	require.Equal(t, toolTypeFunction, result[0].Type)
 	require.Equal(t, "get_weather", result[0].Function.Name)
 	require.Contains(t, result[0].Function.Arguments, "Paris")
@@ -301,7 +385,8 @@ func TestConvertResponseFormat(t *testing.T) {
 	t.Run("nil format returns nil", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertResponseFormat(nil)
+		result, err := convertResponseFormat(nil)
+		require.NoError(t, err)
 		require.Nil(t, result)
 	})
 
@@ -309,7 +394,8 @@ func TestConvertResponseFormat(t *testing.T) {
 		t.Parallel()
 
 		format := &providers.ResponseFormat{Type: responseFormatJSON}
-		result := convertResponseFormat(format)
+		result, err := convertResponseFormat(format)
+		require.NoError(t, err)
 
 		require.NotNil(t, result)
 		require.Equal(t, `"json"`, string(result))
@@ -330,10 +416,30 @@ func TestConvertResponseFormat(t *testing.T) {
 				},
 			},
 		}
-		result := convertResponseFormat(format)
+		result, err := convertResponseFormat(format)
+		require.NoError(t, err)
 
 		require.NotNil(t, result)
 		require.Contains(t, string(result), schemaKeyProperties)
+	})
+
+	t.Run("rejects unsupported and lossy formats", func(t *testing.T) {
+		t.Parallel()
+
+		formats := []*providers.ResponseFormat{
+			{Type: ""},
+			{Type: "yaml"},
+			{Type: responseFormatSchema},
+			{
+				Type:       responseFormatSchema,
+				JSONSchema: &providers.JSONSchema{Schema: map[string]any{"bad": make(chan int)}},
+			},
+		}
+		for _, format := range formats {
+			result, err := convertResponseFormat(format)
+			require.Nil(t, result)
+			require.ErrorIs(t, err, errors.ErrInvalidRequest)
+		}
 	})
 }
 
@@ -371,7 +477,8 @@ func TestConvertMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := convertMessage(tc.msg)
+			result, err := convertMessage(tc.msg)
+			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Equal(t, tc.expectedRole, result.Role)
 		})

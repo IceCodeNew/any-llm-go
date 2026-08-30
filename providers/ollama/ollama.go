@@ -4,6 +4,7 @@ package ollama
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	stderrors "errors"
@@ -154,14 +155,17 @@ func (p *Provider) Completion(
 	ctx context.Context,
 	params providers.CompletionParams,
 ) (*providers.ChatCompletion, error) {
-	req := p.convertParams(params)
+	req, err := p.convertParams(params)
+	if err != nil {
+		return nil, err
+	}
 
 	// Disable streaming for non-stream requests.
 	stream := false
 	req.Stream = &stream
 
 	var response api.ChatResponse
-	err := p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+	err = p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 		response = resp
 		return nil
 	})
@@ -184,13 +188,21 @@ func (p *Provider) CompletionStream(
 		defer close(chunks)
 		defer close(errs)
 
-		req := p.convertParams(params)
+		req, err := p.convertParams(params)
+		if err != nil {
+			errs <- err
+			return
+		}
 		state := newStreamState()
 
-		err := p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+		err = p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 			chunk := state.handleChunk(&resp)
-			chunks <- chunk
-			return nil
+			select {
+			case chunks <- chunk:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		})
 		if err != nil {
 			errs <- p.ConvertError(err)
@@ -273,8 +285,11 @@ func (p *Provider) Name() string {
 }
 
 // convertParams converts providers.CompletionParams to Ollama ChatRequest.
-func (p *Provider) convertParams(params providers.CompletionParams) *api.ChatRequest {
-	messages := convertMessages(params.Messages)
+func (p *Provider) convertParams(params providers.CompletionParams) (*api.ChatRequest, error) {
+	messages, err := convertMessages(params.Messages)
+	if err != nil {
+		return nil, err
+	}
 
 	req := &api.ChatRequest{
 		Model:    params.Model,
@@ -310,20 +325,31 @@ func (p *Provider) convertParams(params providers.CompletionParams) *api.ChatReq
 	}
 
 	if params.ResponseFormat != nil {
-		if schema := convertResponseFormat(params.ResponseFormat); schema != nil {
-			req.Format = schema
+		format, err := convertResponseFormat(params.ResponseFormat)
+		if err != nil {
+			return nil, err
 		}
+		req.Format = format
 	}
 
-	// Handle reasoning/thinking.
-	if params.ReasoningEffort != "" &&
-		params.ReasoningEffort != providers.ReasoningEffortNone &&
-		params.ReasoningEffort != providers.ReasoningEffortAuto {
-		think := api.ThinkValue{Value: true}
-		req.Think = &think
+	// Ollama accepts a boolean disable switch or an explicit supported level.
+	// https://docs.ollama.com/api/chat
+	switch params.ReasoningEffort {
+	case "", providers.ReasoningEffortAuto:
+	case providers.ReasoningEffortNone:
+		req.Think = &api.ThinkValue{Value: false}
+	case providers.ReasoningEffortLow,
+		providers.ReasoningEffortMedium,
+		providers.ReasoningEffortHigh,
+		providers.ReasoningEffortMax:
+		req.Think = &api.ThinkValue{Value: string(params.ReasoningEffort)}
+	case providers.ReasoningEffortMinimal, providers.ReasoningEffortXHigh:
+		return nil, errors.NewUnsupportedParamError(providerName, "reasoning_effort")
+	default:
+		return nil, errors.NewUnsupportedParamError(providerName, "reasoning_effort")
 	}
 
-	return req
+	return req, nil
 }
 
 // newStreamState creates a new stream state.
@@ -409,7 +435,7 @@ func (s *streamState) handleDone(resp *api.ChatResponse, chunk *providers.ChatCo
 }
 
 // convertAssistantMessage converts an assistant message to Ollama format.
-func convertAssistantMessage(msg providers.Message) *api.Message {
+func convertAssistantMessage(msg providers.Message) (*api.Message, error) {
 	ollamaMsg := &api.Message{
 		Role:    msg.Role,
 		Content: msg.ContentString(),
@@ -418,8 +444,15 @@ func convertAssistantMessage(msg providers.Message) *api.Message {
 	if len(msg.ToolCalls) > 0 {
 		toolCalls := make([]api.ToolCall, 0, len(msg.ToolCalls))
 		for _, tc := range msg.ToolCalls {
-			var argsMap map[string]any
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &argsMap)
+			argsMap := make(map[string]any)
+			if tc.Function.Arguments != "" {
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &argsMap); err != nil || argsMap == nil {
+					return nil, errors.NewInvalidRequestError(
+						providerName,
+						fmt.Errorf("tool call arguments must be a JSON object"),
+					)
+				}
+			}
 
 			args := api.NewToolCallFunctionArguments()
 			for k, v := range argsMap {
@@ -427,6 +460,7 @@ func convertAssistantMessage(msg providers.Message) *api.Message {
 			}
 
 			toolCalls = append(toolCalls, api.ToolCall{
+				ID: tc.ID,
 				Function: api.ToolCallFunction{
 					Name:      tc.Function.Name,
 					Arguments: args,
@@ -436,7 +470,7 @@ func convertAssistantMessage(msg providers.Message) *api.Message {
 		ollamaMsg.ToolCalls = toolCalls
 	}
 
-	return ollamaMsg
+	return ollamaMsg, nil
 }
 
 // convertDoneReason converts Ollama done reason to OpenAI finish reason.
@@ -479,10 +513,10 @@ func convertEmbeddingResponse(resp *api.EmbedResponse, model string) *providers.
 }
 
 // convertMessage converts a single message to Ollama format.
-func convertMessage(msg providers.Message) *api.Message {
+func convertMessage(msg providers.Message) (*api.Message, error) {
 	switch msg.Role {
 	case providers.RoleTool:
-		return convertToolMessage(msg)
+		return convertToolMessage(msg), nil
 	case providers.RoleAssistant:
 		return convertAssistantMessage(msg)
 	case providers.RoleUser:
@@ -492,22 +526,25 @@ func convertMessage(msg providers.Message) *api.Message {
 		return &api.Message{
 			Role:    msg.Role,
 			Content: msg.ContentString(),
-		}
+		}, nil
 	}
 }
 
 // convertMessages converts provider messages to Ollama format.
-func convertMessages(messages []providers.Message) []api.Message {
+func convertMessages(messages []providers.Message) ([]api.Message, error) {
 	result := make([]api.Message, 0, len(messages))
 
 	for _, msg := range messages {
-		ollamaMsg := convertMessage(msg)
+		ollamaMsg, err := convertMessage(msg)
+		if err != nil {
+			return nil, err
+		}
 		if ollamaMsg != nil {
 			result = append(result, *ollamaMsg)
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // convertModelsResponse converts an Ollama list response to provider format.
@@ -568,22 +605,36 @@ func convertResponse(resp *api.ChatResponse) *providers.ChatCompletion {
 }
 
 // convertResponseFormat converts a response format to Ollama JSON schema.
-func convertResponseFormat(format *providers.ResponseFormat) json.RawMessage {
+func convertResponseFormat(format *providers.ResponseFormat) (json.RawMessage, error) {
 	if format == nil {
-		return nil
+		return nil, nil
 	}
 
 	if format.Type == responseFormatJSON {
-		return json.RawMessage(`"` + ollamaFormatJSON + `"`)
+		return json.RawMessage(`"` + ollamaFormatJSON + `"`), nil
 	}
 
-	if format.Type == responseFormatSchema && format.JSONSchema != nil {
-		if schemaBytes, err := json.Marshal(format.JSONSchema.Schema); err == nil {
-			return schemaBytes
+	if format.Type == responseFormatSchema {
+		if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
+			return nil, errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("json_schema response format requires a schema"),
+			)
 		}
+		schemaBytes, err := json.Marshal(format.JSONSchema.Schema)
+		if err != nil {
+			return nil, errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("marshaling response format schema: %w", err),
+			)
+		}
+		return schemaBytes, nil
 	}
 
-	return nil
+	return nil, errors.NewInvalidRequestError(
+		providerName,
+		fmt.Errorf("unsupported response_format.type %q", format.Type),
+	)
 }
 
 // convertToolCalls converts Ollama tool calls to provider format.
@@ -599,8 +650,12 @@ func convertToolCalls(toolCalls []api.ToolCall) []providers.ToolCall {
 			}
 		}
 
+		id := tc.ID
+		if id == "" {
+			id = fmt.Sprintf(toolCallIDFormat, i)
+		}
 		result = append(result, providers.ToolCall{
-			ID:   fmt.Sprintf(toolCallIDFormat, i),
+			ID:   id,
 			Type: toolTypeFunction,
 			Function: providers.FunctionCall{
 				Name:      tc.Function.Name,
@@ -673,7 +728,7 @@ func convertTools(tools []providers.Tool) api.Tools {
 }
 
 // convertUserMessage converts a user message to Ollama format.
-func convertUserMessage(msg providers.Message) *api.Message {
+func convertUserMessage(msg providers.Message) (*api.Message, error) {
 	ollamaMsg := &api.Message{
 		Role:    msg.Role,
 		Content: msg.ContentString(),
@@ -681,39 +736,61 @@ func convertUserMessage(msg providers.Message) *api.Message {
 
 	// Handle multi-modal messages with images.
 	if msg.IsMultiModal() {
-		images := extractImages(msg)
+		images, err := extractImages(msg)
+		if err != nil {
+			return nil, err
+		}
 		if len(images) > 0 {
 			ollamaMsg.Images = images
 		}
 	}
 
-	return ollamaMsg
+	return ollamaMsg, nil
 }
 
 // extractImages extracts base64 image data from a multi-modal message.
-func extractImages(msg providers.Message) []api.ImageData {
+func extractImages(msg providers.Message) ([]api.ImageData, error) {
 	var images []api.ImageData
 
 	for _, part := range msg.ContentParts() {
-		if part.Type != contentTypeImageURL || part.ImageURL == nil {
+		if part.Type == "text" {
 			continue
+		}
+		if part.Type != contentTypeImageURL {
+			return nil, errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("unsupported content part type %q", part.Type),
+			)
+		}
+		if part.ImageURL == nil {
+			return nil, errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("image_url content part is missing image_url"),
+			)
 		}
 
 		imgURL := part.ImageURL.URL
 		if !strings.HasPrefix(imgURL, dataImagePrefix) {
-			continue
+			return nil, errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("images require base64 data URLs"),
+			)
 		}
 
-		// Extract base64 data from data URL.
-		parts := strings.SplitN(imgURL, ",", 2)
-		if len(parts) != 2 {
-			continue
+		// Ollama's message.images contract accepts base64 strings, not URLs.
+		// https://docs.ollama.com/api/chat
+		header, data, ok := strings.Cut(imgURL, ",")
+		if !ok || !strings.HasSuffix(header, ";base64") || data == "" {
+			return nil, errors.NewInvalidRequestError(providerName, fmt.Errorf("malformed base64 image data URL"))
+		}
+		if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+			return nil, errors.NewInvalidRequestError(providerName, fmt.Errorf("invalid base64 image data: %w", err))
 		}
 
-		images = append(images, api.ImageData(parts[1]))
+		images = append(images, api.ImageData(data))
 	}
 
-	return images
+	return images, nil
 }
 
 // extractThinking extracts thinking content from response.
