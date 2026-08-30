@@ -56,6 +56,7 @@ func TestCapabilities(t *testing.T) {
 
 	caps := provider.Capabilities()
 
+	require.True(t, caps.Batch)
 	require.True(t, caps.Completion)
 	require.True(t, caps.CompletionImage)
 	require.True(t, caps.CompletionPDF)
@@ -63,7 +64,7 @@ func TestCapabilities(t *testing.T) {
 	require.True(t, caps.CompletionStreaming)
 	require.True(t, caps.CompletionTools)
 	require.False(t, caps.Embedding) // Anthropic doesn't support embeddings.
-	require.False(t, caps.ListModels)
+	require.True(t, caps.ListModels)
 }
 
 func TestConvertMessages(t *testing.T) {
@@ -77,9 +78,10 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
-		require.Equal(t, "You are a helpful assistant.", system)
+		require.Equal(t, "You are a helpful assistant.", system[0].Text)
 		require.Len(t, result, 1) // Only user message.
 	})
 
@@ -92,9 +94,10 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
-		require.Equal(t, "First part.\nSecond part.", system)
+		require.Equal(t, []string{"First part.", "Second part."}, []string{system[0].Text, system[1].Text})
 		require.Len(t, result, 1)
 	})
 
@@ -105,7 +108,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Empty(t, system)
 		require.Len(t, result, 1)
@@ -119,7 +123,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleAssistant, Content: "Hi there!"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Empty(t, system)
 		require.Len(t, result, 2)
@@ -146,7 +151,8 @@ func TestConvertMessages(t *testing.T) {
 			},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 2)
 	})
@@ -170,7 +176,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleTool, Content: "sunny, 22°C", ToolCallID: "call_123"},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 3)
 	})
@@ -183,7 +190,8 @@ func TestConvertImagePart(t *testing.T) {
 		t.Parallel()
 
 		img := &providers.ImageURL{URL: "https://example.com/image.png"}
-		result := convertImagePart(img)
+		result, err := convertImagePart(img)
+		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
 
@@ -191,7 +199,8 @@ func TestConvertImagePart(t *testing.T) {
 		t.Parallel()
 
 		img := &providers.ImageURL{URL: "data:image/jpeg;base64,/9j/4AAQSkZJRg=="}
-		result := convertImagePart(img)
+		result, err := convertImagePart(img)
+		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
 }
@@ -292,6 +301,67 @@ func TestStreamStateHandleThinkingDelta(t *testing.T) {
 	require.Equal(t, "Let me think...", state.reasoning.String())
 }
 
+func TestStreamStateHandleToolUseStart(t *testing.T) {
+	t.Parallel()
+
+	const toolCallID = "call_1"
+
+	state := newStreamState()
+	state.messageID = "msg_123"
+	state.model = "claude-3"
+
+	chunk := state.handleContentBlockStart(anthropic.ContentBlockStartEvent{
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: blockTypeToolUse,
+			ID:   toolCallID,
+			Name: "get_weather",
+		},
+	})
+
+	expected := providers.ToolCall{
+		ID:   toolCallID,
+		Type: "function",
+		Function: providers.FunctionCall{
+			Name: "get_weather",
+		},
+	}
+
+	require.NotNil(t, chunk)
+	require.Equal(t, 0, state.currentToolIdx)
+	require.Equal(t, []providers.ToolCall{expected}, state.toolCalls)
+	require.Equal(t, []providers.ToolCall{expected}, chunk.Choices[0].Delta.ToolCalls)
+}
+
+func TestStreamStatePreservesServerToolInputForReplay(t *testing.T) {
+	t.Parallel()
+
+	state := newStreamState()
+	var start anthropic.ContentBlockStartEvent
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"type":"content_block_start","index":0,
+		"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}
+	}`), &start))
+	startChunk := state.handleContentBlockStart(start)
+	require.NotNil(t, startChunk)
+	require.NotNil(t, startChunk.Choices[0].Delta.Extra[providerName]["response_blocks"])
+
+	var delta anthropic.ContentBlockDeltaEvent
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"type":"content_block_delta","index":0,
+		"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"any-llm\"}"}
+	}`), &delta))
+	inputChunk := state.handleContentBlockDelta(delta)
+	require.NotNil(t, inputChunk)
+
+	message := providers.Message{Role: providers.RoleAssistant, Extra: inputChunk.Choices[0].Delta.Extra}
+	replayed, err := convertAssistantMessage(message)
+	require.NoError(t, err)
+	wire, err := json.Marshal(replayed)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"type":"server_tool_use"`)
+	require.Contains(t, string(wire), `"query":"any-llm"`)
+}
+
 func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 	t.Parallel()
 
@@ -329,86 +399,143 @@ func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 		chunk := state.handleInputJSONDelta(`{"location":`)
 		require.NotNil(t, chunk)
 		require.Equal(t, `{"location":`, state.toolCalls[0].Function.Arguments)
+		require.Equal(t, `{"location":`, chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments)
 
 		chunk2 := state.handleInputJSONDelta(`"Paris"}`)
 		require.NotNil(t, chunk2)
 		require.Equal(t, `{"location":"Paris"}`, state.toolCalls[0].Function.Arguments)
+		require.Equal(t, `"Paris"}`, chunk2.Choices[0].Delta.ToolCalls[0].Function.Arguments)
 	})
+}
+
+func TestStreamStateHandleCitationDelta(t *testing.T) {
+	t.Parallel()
+
+	var event anthropic.ContentBlockDeltaEvent
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"type":"content_block_delta",
+		"index":2,
+		"delta":{"type":"citations_delta","citation":{
+			"type":"char_location","cited_text":"evidence","document_index":0,
+			"document_title":"source","start_char_index":1,"end_char_index":9
+		}}
+	}`), &event))
+
+	chunk := newStreamState().handleContentBlockDelta(event)
+	require.NotNil(t, chunk)
+	data := chunk.Choices[0].Delta.Extra[providerName]
+	require.Equal(t, int64(2), data["index"])
+	citations, ok := data["citations"].([]any)
+	require.True(t, ok)
+	require.Len(t, citations, 1)
+	citation, ok := citations[0].(anthropic.CitationsDeltaCitationUnion)
+	require.True(t, ok)
+	require.Equal(t, "char_location", citation.Type)
+	require.Equal(t, "evidence", citation.CitedText)
+	require.Equal(t, int64(1), citation.StartCharIndex)
+	require.Equal(t, int64(9), citation.EndCharIndex)
 }
 
 func TestApplyThinking(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name              string
-		effort            providers.ReasoningEffort
-		initialMaxTokens  int64
-		expectedMaxTokens int64
-		expectThinking    bool
-	}{
-		{
-			name:              "empty effort does nothing",
-			effort:            "",
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 1000,
-			expectThinking:    false,
-		},
-		{
-			name:              "ReasoningEffortNone does nothing",
-			effort:            providers.ReasoningEffortNone,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 1000,
-			expectThinking:    false,
-		},
-		{
-			name:              "invalid effort does nothing",
-			effort:            "invalid",
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 1000,
-			expectThinking:    false,
-		},
-		{
-			name:              "low effort increases tokens when insufficient",
-			effort:            providers.ReasoningEffortLow,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 2048, // budget=1024, min=2048
-			expectThinking:    true,
-		},
-		{
-			name:              "low effort preserves tokens when sufficient",
-			effort:            providers.ReasoningEffortLow,
-			initialMaxTokens:  10000,
-			expectedMaxTokens: 10000,
-			expectThinking:    true,
-		},
-		{
-			name:              "medium effort increases tokens when insufficient",
-			effort:            providers.ReasoningEffortMedium,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 8192, // budget=4096, min=8192
-			expectThinking:    true,
-		},
-		{
-			name:              "high effort increases tokens when insufficient",
-			effort:            providers.ReasoningEffortHigh,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 32768, // budget=16384, min=32768
-			expectThinking:    true,
-		},
-	}
+	t.Run("empty effort leaves thinking unset", func(t *testing.T) {
+		t.Parallel()
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+		req := &anthropic.MessageNewParams{MaxTokens: 1000}
+		require.NoError(t, applyThinking(req, ""))
+		require.Equal(t, int64(1000), req.MaxTokens)
+		require.Nil(t, req.Thinking.OfDisabled)
+		require.Nil(t, req.Thinking.OfAdaptive)
+		require.Empty(t, req.OutputConfig.Effort)
+	})
 
-			req := &anthropic.MessageNewParams{MaxTokens: tc.initialMaxTokens}
-			applyThinking(req, tc.effort, tc.initialMaxTokens)
-			require.Equal(t, tc.expectedMaxTokens, req.MaxTokens)
-			if tc.expectThinking {
-				require.NotNil(t, req.Thinking)
-			}
-		})
-	}
+	t.Run("ReasoningEffortNone disables thinking", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{MaxTokens: 1000}
+		require.NoError(t, applyThinking(req, providers.ReasoningEffortNone))
+		require.NotNil(t, req.Thinking.OfDisabled)
+		require.Empty(t, req.OutputConfig.Effort)
+	})
+
+	t.Run("ReasoningEffortAuto leaves thinking unset", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{MaxTokens: 1000}
+		require.NoError(t, applyThinking(req, providers.ReasoningEffortAuto))
+		require.Nil(t, req.Thinking.OfDisabled)
+		require.Nil(t, req.Thinking.OfAdaptive)
+		require.Empty(t, req.OutputConfig.Effort)
+	})
+
+	t.Run("invalid effort returns UnsupportedParamError", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{MaxTokens: 1000}
+		err := applyThinking(req, "invalid")
+		require.Error(t, err)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
+		require.Equal(t, int64(1000), req.MaxTokens)
+	})
+
+	t.Run("low effort uses adaptive thinking and does not change max tokens", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{MaxTokens: 1000}
+		require.NoError(t, applyThinking(req, providers.ReasoningEffortLow))
+		require.Equal(t, int64(1000), req.MaxTokens)
+		require.NotNil(t, req.Thinking.OfAdaptive)
+		require.Equal(t, anthropic.OutputConfigEffortLow, req.OutputConfig.Effort)
+	})
+
+	t.Run("medium effort maps to medium", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{}
+		require.NoError(t, applyThinking(req, providers.ReasoningEffortMedium))
+		require.NotNil(t, req.Thinking.OfAdaptive)
+		require.Equal(t, anthropic.OutputConfigEffortMedium, req.OutputConfig.Effort)
+	})
+
+	t.Run("high effort maps to high", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{}
+		require.NoError(t, applyThinking(req, providers.ReasoningEffortHigh))
+		require.Equal(t, anthropic.OutputConfigEffortHigh, req.OutputConfig.Effort)
+	})
+
+	t.Run("xhigh stays xhigh", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{}
+		require.NoError(t, applyThinking(req, "xhigh"))
+		require.NotNil(t, req.Thinking.OfAdaptive)
+		require.Equal(t, anthropic.OutputConfigEffortXhigh, req.OutputConfig.Effort)
+	})
+
+	t.Run("max stays max", func(t *testing.T) {
+		t.Parallel()
+
+		req := &anthropic.MessageNewParams{}
+		require.NoError(t, applyThinking(req, "max"))
+		require.Equal(t, anthropic.OutputConfigEffortMax, req.OutputConfig.Effort)
+	})
+
+	t.Run("preserves existing OutputConfig format", func(t *testing.T) {
+		t.Parallel()
+
+		schema := map[string]any{"type": "object"}
+		req := &anthropic.MessageNewParams{
+			OutputConfig: anthropic.OutputConfigParam{
+				Format: anthropic.JSONOutputFormatParam{Schema: schema},
+			},
+		}
+		require.NoError(t, applyThinking(req, providers.ReasoningEffortLow))
+		require.Equal(t, schema, req.OutputConfig.Format.Schema)
+		require.Equal(t, anthropic.OutputConfigEffortLow, req.OutputConfig.Effort)
+	})
 }
 
 func TestConvertMessage(t *testing.T) {
@@ -450,10 +577,12 @@ func TestConvertMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := convertMessage(tc.msg)
+			result, err := convertMessage(tc.msg)
 			if tc.expectNil {
+				require.Error(t, err)
 				require.Nil(t, result)
 			} else {
+				require.NoError(t, err)
 				require.NotNil(t, result)
 			}
 		})
@@ -464,9 +593,10 @@ func TestConvertToolCall(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		toolCall    providers.ToolCall
-		expectInput bool
+		name      string
+		toolCall  providers.ToolCall
+		wantInput map[string]any
+		wantErr   bool
 	}{
 		{
 			name: "valid JSON arguments",
@@ -478,10 +608,11 @@ func TestConvertToolCall(t *testing.T) {
 					Arguments: `{"location": "Paris"}`,
 				},
 			},
-			expectInput: true,
+			wantInput: map[string]any{"location": "Paris"},
+			wantErr:   false,
 		},
 		{
-			name: "invalid JSON arguments results in nil input",
+			name: "invalid JSON arguments return an error",
 			toolCall: providers.ToolCall{
 				ID:   "call_456",
 				Type: "function",
@@ -490,10 +621,11 @@ func TestConvertToolCall(t *testing.T) {
 					Arguments: `{invalid json`,
 				},
 			},
-			expectInput: false,
+			wantInput: nil,
+			wantErr:   true,
 		},
 		{
-			name: "empty arguments results in nil input",
+			name: "empty arguments become an empty object",
 			toolCall: providers.ToolCall{
 				ID:   "call_789",
 				Type: "function",
@@ -502,7 +634,34 @@ func TestConvertToolCall(t *testing.T) {
 					Arguments: "",
 				},
 			},
-			expectInput: false,
+			wantInput: map[string]any{},
+			wantErr:   false,
+		},
+		{
+			name: "whitespace arguments become an empty object",
+			toolCall: providers.ToolCall{
+				ID:   "call_whitespace",
+				Type: "function",
+				Function: providers.FunctionCall{
+					Name:      "get_weather",
+					Arguments: " \n\t ",
+				},
+			},
+			wantInput: map[string]any{},
+			wantErr:   false,
+		},
+		{
+			name: "null arguments return an error",
+			toolCall: providers.ToolCall{
+				ID:   "call_null",
+				Type: "function",
+				Function: providers.FunctionCall{
+					Name:      "get_weather",
+					Arguments: "null",
+				},
+			},
+			wantInput: nil,
+			wantErr:   true,
 		},
 	}
 
@@ -510,16 +669,17 @@ func TestConvertToolCall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := convertToolCall(tc.toolCall)
+			result, err := convertToolCall(tc.toolCall)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
 			require.NotNil(t, result.OfToolUse)
 			require.Equal(t, tc.toolCall.ID, result.OfToolUse.ID)
 			require.Equal(t, tc.toolCall.Function.Name, result.OfToolUse.Name)
 			require.Equal(t, "tool_use", string(result.OfToolUse.Type))
-			if tc.expectInput {
-				require.NotNil(t, result.OfToolUse.Input)
-			} else {
-				require.Nil(t, result.OfToolUse.Input)
-			}
+			require.Equal(t, tc.wantInput, result.OfToolUse.Input)
 		})
 	}
 }
@@ -681,54 +841,37 @@ func TestConvertTool(t *testing.T) {
 	})
 }
 
-func TestThinkingBudget(t *testing.T) {
+func TestThinkingEffort(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		effort   providers.ReasoningEffort
-		expected int64
+		expected anthropic.OutputConfigEffort
 		ok       bool
 	}{
+		{name: "minimal maps to low", effort: "minimal", expected: anthropic.OutputConfigEffortLow, ok: true},
+		{name: "low", effort: providers.ReasoningEffortLow, expected: anthropic.OutputConfigEffortLow, ok: true},
 		{
-			name:     "low effort",
-			effort:   providers.ReasoningEffortLow,
-			expected: 1024,
-			ok:       true,
-		},
-		{
-			name:     "medium effort",
+			name:     "medium",
 			effort:   providers.ReasoningEffortMedium,
-			expected: 4096,
+			expected: anthropic.OutputConfigEffortMedium,
 			ok:       true,
 		},
-		{
-			name:     "high effort",
-			effort:   providers.ReasoningEffortHigh,
-			expected: 16384,
-			ok:       true,
-		},
-		{
-			name:     "none effort",
-			effort:   providers.ReasoningEffortNone,
-			expected: 0,
-			ok:       false,
-		},
-		{
-			name:     "invalid effort",
-			effort:   "invalid",
-			expected: 0,
-			ok:       false,
-		},
+		{name: "high", effort: providers.ReasoningEffortHigh, expected: anthropic.OutputConfigEffortHigh, ok: true},
+		{name: "xhigh stays xhigh", effort: "xhigh", expected: anthropic.OutputConfigEffortXhigh, ok: true},
+		{name: "max stays max", effort: "max", expected: anthropic.OutputConfigEffortMax, ok: true},
+		{name: "none", effort: providers.ReasoningEffortNone, ok: false},
+		{name: "invalid", effort: "invalid", ok: false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			budget, ok := thinkingBudget(tc.effort)
+			level, ok := thinkingEffort(tc.effort)
 			require.Equal(t, tc.ok, ok)
-			require.Equal(t, tc.expected, budget)
+			require.Equal(t, tc.expected, level)
 		})
 	}
 }
@@ -1195,6 +1338,10 @@ func TestIntegrationAgentLoopContinuation(t *testing.T) {
 func TestIntegrationAuthenticationError(t *testing.T) {
 	t.Parallel()
 
+	if testutil.SkipIfNoAPIKey("anthropic") {
+		t.Skip("ANTHROPIC_API_KEY not set")
+	}
+
 	provider, err := New(config.WithAPIKey("invalid-api-key"))
 	require.NoError(t, err)
 
@@ -1357,6 +1504,14 @@ func TestConvertParams_ResponseFormat(t *testing.T) {
 		}
 	}
 
+	t.Run("omitted MaxTokens preserves the existing default", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := p.convertParams(baseParams())
+		require.NoError(t, err)
+		require.Equal(t, int64(defaultMaxTokens), result.MaxTokens)
+	})
+
 	t.Run("nil ResponseFormat leaves OutputConfig unset", func(t *testing.T) {
 		t.Parallel()
 
@@ -1366,28 +1521,52 @@ func TestConvertParams_ResponseFormat(t *testing.T) {
 		result, err := p.convertParams(params)
 		require.NoError(t, err)
 		require.Equal(t, anthropic.OutputConfigParam{}, result.OutputConfig)
+		require.Nil(t, result.Thinking.OfDisabled)
+		require.Nil(t, result.Thinking.OfAdaptive)
 	})
 
-	t.Run("json_object type is no-op", func(t *testing.T) {
+	t.Run("none reasoning effort disables thinking", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ReasoningEffort = providers.ReasoningEffortNone
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.NotNil(t, result.Thinking.OfDisabled)
+		require.Nil(t, result.Thinking.OfAdaptive)
+		require.Empty(t, result.OutputConfig.Effort)
+	})
+
+	t.Run("invalid reasoning effort returns UnsupportedParamError", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ReasoningEffort = "invalid"
+
+		_, err := p.convertParams(params)
+		require.Error(t, err)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
+	})
+
+	t.Run("json_object type is rejected", func(t *testing.T) {
 		t.Parallel()
 
 		params := baseParams()
 		params.ResponseFormat = &providers.ResponseFormat{Type: responseFormatJSONObject}
 
-		result, err := p.convertParams(params)
-		require.NoError(t, err)
-		require.Equal(t, anthropic.OutputConfigParam{}, result.OutputConfig)
+		_, err := p.convertParams(params)
+		require.Error(t, err)
 	})
 
-	t.Run("json_schema with nil JSONSchema is no-op", func(t *testing.T) {
+	t.Run("json_schema with nil JSONSchema is rejected", func(t *testing.T) {
 		t.Parallel()
 
 		params := baseParams()
 		params.ResponseFormat = &providers.ResponseFormat{Type: responseFormatJSONSchema, JSONSchema: nil}
 
-		result, err := p.convertParams(params)
-		require.NoError(t, err)
-		require.Equal(t, anthropic.OutputConfigParam{}, result.OutputConfig)
+		_, err := p.convertParams(params)
+		require.Error(t, err)
 	})
 
 	t.Run("json_schema with valid schema sets OutputConfig", func(t *testing.T) {
@@ -1430,6 +1609,26 @@ func TestConvertParams_ResponseFormat(t *testing.T) {
 		require.Equal(t, anthropic.JSONOutputFormatParam{Schema: schema}, result.OutputConfig.Format)
 	})
 
+	t.Run("reasoning effort merges into existing OutputConfig", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ReasoningEffort = providers.ReasoningEffortMedium
+		params.ResponseFormat = &providers.ResponseFormat{
+			Type: responseFormatJSONSchema,
+			JSONSchema: &providers.JSONSchema{
+				Name:   "answer_schema",
+				Schema: schema,
+			},
+		}
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, schema, result.OutputConfig.Format.Schema)
+		require.Equal(t, anthropic.OutputConfigEffortMedium, result.OutputConfig.Effort)
+		require.NotNil(t, result.Thinking.OfAdaptive)
+	})
+
 	t.Run("streaming path also receives OutputConfig", func(t *testing.T) {
 		t.Parallel()
 
@@ -1447,6 +1646,358 @@ func TestConvertParams_ResponseFormat(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, schema, result.OutputConfig.Format.Schema)
 	})
+}
+
+func TestConvertResponsePreservesThinkingSignature(t *testing.T) {
+	t.Parallel()
+
+	resp := &anthropic.Message{
+		ID:    "msg_001",
+		Model: anthropic.Model("claude-3-5-sonnet"),
+		Content: []anthropic.ContentBlockUnion{
+			{Type: blockTypeThinking, Thinking: "Let me think...", Signature: "sig_abc123"},
+			{Type: blockTypeText, Text: "The answer is 42."},
+		},
+		StopReason: anthropic.StopReasonEndTurn,
+		Usage:      anthropic.Usage{InputTokens: 10, OutputTokens: 20},
+	}
+
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Choices[0].Message.Reasoning)
+	require.Equal(t, "Let me think...", result.Choices[0].Message.Reasoning.Content)
+	require.Equal(t, "sig_abc123", result.Choices[0].Message.Reasoning.Signature)
+	require.Equal(t, "The answer is 42.", result.Choices[0].Message.ContentString())
+}
+
+func TestConvertResponsePreservesTextCitations(t *testing.T) {
+	t.Parallel()
+
+	resp := &anthropic.Message{
+		ID:    "msg_citation",
+		Model: anthropic.Model("claude-test"),
+		Content: []anthropic.ContentBlockUnion{{
+			Type: blockTypeText,
+			Text: "Cited answer.",
+			Citations: []anthropic.TextCitationUnion{{
+				Type:            "page_location",
+				CitedText:       "source text",
+				DocumentIndex:   0,
+				StartPageNumber: 1,
+				EndPageNumber:   2,
+			}},
+		}},
+	}
+
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
+	data := result.Choices[0].Message.Extra[providerName]
+	citations, ok := data["citations"].([]any)
+	require.True(t, ok)
+	require.Len(t, citations, 1)
+	citation, ok := citations[0].(anthropic.TextCitationUnion)
+	require.True(t, ok)
+	require.Equal(t, "page_location", citation.Type)
+	require.Equal(t, "source text", citation.CitedText)
+	require.Equal(t, int64(1), citation.StartPageNumber)
+	require.Equal(t, int64(2), citation.EndPageNumber)
+}
+
+func TestConvertResponsePreservesAndReplaysServerToolBlocks(t *testing.T) {
+	t.Parallel()
+
+	var response anthropic.Message
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"id":"msg_server_tool","type":"message","role":"assistant","model":"claude-test",
+		"stop_reason":"end_turn","stop_sequence":null,
+		"content":[
+			{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"any-llm"}},
+			{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{
+				"type":"web_search_result","title":"any-llm","url":"https://example.test/any-llm",
+				"encrypted_content":"encrypted-result"
+			}]},
+			{"type":"text","text":"Here is the answer."}
+		],
+		"usage":{"input_tokens":3,"output_tokens":4}
+	}`), &response))
+
+	result, err := convertResponse(&response)
+	require.NoError(t, err)
+	message := result.Choices[0].Message
+	require.Equal(t, "Here is the answer.", message.Content)
+
+	encoded, err := json.Marshal(message)
+	require.NoError(t, err)
+	var restored providers.Message
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	replayed, err := convertAssistantMessage(restored)
+	require.NoError(t, err)
+	require.Len(t, replayed.Content, 3)
+
+	wire, err := json.Marshal(replayed)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"type":"server_tool_use"`)
+	require.Contains(t, string(wire), `"encrypted_content":"encrypted-result"`)
+}
+
+func TestServerToolBlockReplayRejectsConflictingNormalizedContent(t *testing.T) {
+	t.Parallel()
+
+	var response anthropic.Message
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"id":"msg_123","type":"message","role":"assistant","model":"claude-sonnet-4-6",
+		"content":[
+			{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{"query":"test"}},
+			{"type":"text","text":"original"}
+		],
+		"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}
+	}`), &response))
+
+	completion, err := convertResponse(&response)
+	require.NoError(t, err)
+	message := completion.Choices[0].Message
+	message.Content = "edited"
+
+	_, err = convertAssistantMessage(message)
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+}
+
+func TestConvertResponseAccumulatesThinkingBlocks(t *testing.T) {
+	t.Parallel()
+
+	resp := &anthropic.Message{
+		ID:    "msg_002",
+		Model: anthropic.Model("claude-3-5-sonnet"),
+		Content: []anthropic.ContentBlockUnion{
+			{Type: blockTypeThinking, Thinking: "First thought.", Signature: "sig_1"},
+			{Type: blockTypeThinking, Thinking: " Second thought.", Signature: "sig_2"},
+		},
+		StopReason: anthropic.StopReasonEndTurn,
+		Usage:      anthropic.Usage{InputTokens: 5, OutputTokens: 10},
+	}
+
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
+	require.NotNil(t, result.Choices[0].Message.Reasoning)
+	require.Equal(t, "First thought. Second thought.", result.Choices[0].Message.Reasoning.Content)
+	// Last non-empty signature wins, matching Python extra_content overwrite.
+	require.Equal(t, "sig_2", result.Choices[0].Message.Reasoning.Signature)
+}
+
+func TestConvertResponsePreservesThinkingWithoutSignature(t *testing.T) {
+	t.Parallel()
+
+	resp := &anthropic.Message{
+		ID:    "msg_003",
+		Model: anthropic.Model("claude-3-5-sonnet"),
+		Content: []anthropic.ContentBlockUnion{
+			{Type: blockTypeThinking, Thinking: "No signature here."},
+			{Type: blockTypeText, Text: "Response."},
+		},
+		StopReason: anthropic.StopReasonEndTurn,
+		Usage:      anthropic.Usage{InputTokens: 5, OutputTokens: 10},
+	}
+
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
+	require.NotNil(t, result.Choices[0].Message.Reasoning)
+	require.Equal(t, "No signature here.", result.Choices[0].Message.Reasoning.Content)
+	require.Empty(t, result.Choices[0].Message.Reasoning.Signature)
+	require.Empty(t, result.Choices[0].Message.Extra)
+}
+
+func TestConvertAssistantMessageReplaysThinkingBeforeText(t *testing.T) {
+	t.Parallel()
+
+	msg := providers.Message{
+		Role:      providers.RoleAssistant,
+		Content:   "The answer.",
+		Reasoning: &providers.Reasoning{Content: "I reasoned about this.", Signature: "sig_xyz"},
+	}
+
+	result, err := convertAssistantMessage(msg)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 2)
+	require.NotNil(t, result.Content[0].OfThinking)
+	require.Equal(t, "sig_xyz", result.Content[0].OfThinking.Signature)
+	require.Equal(t, "I reasoned about this.", result.Content[0].OfThinking.Thinking)
+	require.NotNil(t, result.Content[1].OfText)
+	require.Equal(t, "The answer.", result.Content[1].OfText.Text)
+}
+
+func TestConvertAssistantMessageReplaysThinkingBeforeToolCalls(t *testing.T) {
+	t.Parallel()
+
+	msg := providers.Message{
+		Role: providers.RoleAssistant,
+		ToolCalls: []providers.ToolCall{
+			{
+				ID:       "call_1",
+				Type:     "function",
+				Function: providers.FunctionCall{Name: "get_weather", Arguments: `{}`},
+			},
+		},
+		Reasoning: &providers.Reasoning{Content: "Need to check weather.", Signature: "sig_tool"},
+	}
+
+	result, err := convertAssistantMessage(msg)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 2)
+	require.NotNil(t, result.Content[0].OfThinking)
+	require.Equal(t, "sig_tool", result.Content[0].OfThinking.Signature)
+	require.NotNil(t, result.Content[1].OfToolUse)
+}
+
+func TestConvertAssistantMessagePreservesMultimodalContentWithToolCalls(t *testing.T) {
+	t.Parallel()
+
+	msg := providers.Message{
+		Role: providers.RoleAssistant,
+		Content: []providers.ContentPart{
+			{Type: blockTypeText, Text: "I found this image."},
+			{Type: "image_url", ImageURL: &providers.ImageURL{URL: "https://example.com/result.png"}},
+		},
+		ToolCalls: []providers.ToolCall{
+			{
+				ID:       "call_1",
+				Type:     "function",
+				Function: providers.FunctionCall{Name: "inspect_image", Arguments: `{}`},
+			},
+		},
+		Reasoning: &providers.Reasoning{Content: "Need to inspect the image.", Signature: "sig_image"},
+	}
+
+	result, err := convertAssistantMessage(msg)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 4)
+	require.NotNil(t, result.Content[0].OfThinking)
+	require.Equal(t, "I found this image.", result.Content[1].OfText.Text)
+	require.Equal(t, "https://example.com/result.png", result.Content[2].OfImage.Source.OfURL.URL)
+	require.NotNil(t, result.Content[3].OfToolUse)
+}
+
+func TestConvertAssistantMessageOmitsThinkingWithoutReasoning(t *testing.T) {
+	t.Parallel()
+
+	msg := providers.Message{
+		Role:    providers.RoleAssistant,
+		Content: "Plain response.",
+	}
+
+	result, err := convertAssistantMessage(msg)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 1)
+	require.Nil(t, result.Content[0].OfThinking)
+	require.NotNil(t, result.Content[0].OfText)
+}
+
+func TestConvertAssistantMessageOmitsUnsignedReasoning(t *testing.T) {
+	t.Parallel()
+
+	msg := providers.Message{
+		Role:      providers.RoleAssistant,
+		Content:   "Response.",
+		Reasoning: &providers.Reasoning{Content: "Thought without signature."},
+	}
+
+	result, err := convertAssistantMessage(msg)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 1)
+	require.Nil(t, result.Content[0].OfThinking)
+	require.NotNil(t, result.Content[0].OfText)
+}
+
+func TestConvertAssistantMessageOmitsUnsignedThinkingMetadata(t *testing.T) {
+	t.Parallel()
+
+	msg := providers.Message{
+		Role:    providers.RoleAssistant,
+		Content: "Response.",
+		Extra: map[string]providers.ProviderData{providerName: {"thinking_blocks": []any{
+			map[string]any{"type": blockTypeThinking, "thinking": "Incomplete stream.", "signature": ""},
+		}}},
+	}
+
+	result, err := convertAssistantMessage(msg)
+	require.NoError(t, err)
+	require.Len(t, result.Content, 1)
+	require.Nil(t, result.Content[0].OfThinking)
+	require.NotNil(t, result.Content[0].OfText)
+}
+
+func TestStreamStateHandleSignatureDelta(t *testing.T) {
+	t.Parallel()
+
+	state := newStreamState()
+	state.messageID = "msg_123"
+	state.model = "claude-3"
+	state.handleContentBlockStart(anthropic.ContentBlockStartEvent{
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: blockTypeThinking},
+	})
+
+	chunk := state.handleContentBlockDelta(anthropic.ContentBlockDeltaEvent{
+		Delta: anthropic.RawContentBlockDeltaUnion{
+			Type:      deltaTypeSignature,
+			Signature: "sig_stream_abc",
+		},
+	})
+
+	// signature_delta emits the signature at Anthropic's official event boundary.
+	require.NotNil(t, chunk)
+	blocks, ok := chunk.Choices[0].Delta.Extra[providerName]["thinking_blocks"].([]providers.ProviderData)
+	require.True(t, ok)
+	require.Equal(t, "sig_stream_abc", blocks[0]["signature"])
+}
+
+func TestStreamStateHandleMessageDelta_WithoutSignature(t *testing.T) {
+	t.Parallel()
+
+	state := newStreamState()
+	state.messageID = "msg_123"
+	state.model = "claude-3"
+
+	chunk := state.handleMessageDelta(anthropic.MessageDeltaEvent{
+		Delta: anthropic.MessageDeltaEventDelta{StopReason: anthropic.StopReasonEndTurn},
+		Usage: anthropic.MessageDeltaUsage{OutputTokens: 42},
+	})
+
+	require.Nil(t, chunk.Choices[0].Delta.Reasoning)
+}
+
+func TestConvertMessages_AssistantWithThinkingSignatureRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a multi-turn conversation: the assistant's previous thinking
+	// (with signature) must be replayed so Anthropic maintains thinking continuity.
+	messages := []providers.Message{
+		{Role: providers.RoleUser, Content: "What is 2+2?"},
+		{
+			Role:      providers.RoleAssistant,
+			Content:   "4",
+			Reasoning: &providers.Reasoning{Content: "2 plus 2 equals 4.", Signature: "sig_roundtrip"},
+		},
+		{Role: providers.RoleUser, Content: "And 3+3?"},
+	}
+
+	result, system, err := convertMessages(messages)
+	require.NoError(t, err)
+
+	require.Empty(t, system)
+	require.Len(t, result, 3)
+
+	// The assistant message (index 1) must start with a thinking block.
+	assistantMsg := result[1]
+	require.Equal(t, anthropic.MessageParamRoleAssistant, assistantMsg.Role)
+	require.NotEmpty(t, assistantMsg.Content)
+	require.NotNil(t, assistantMsg.Content[0].OfThinking)
+	require.Equal(t, "sig_roundtrip", assistantMsg.Content[0].OfThinking.Signature)
+	require.Equal(t, "2 plus 2 equals 4.", assistantMsg.Content[0].OfThinking.Thinking)
 }
 
 // newTestAPIError creates an Anthropic API error for testing.
