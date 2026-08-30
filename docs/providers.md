@@ -466,6 +466,12 @@ provider, err := openai.New(
 - `text-embedding-3-small` - Cost-effective embeddings
 - `text-embedding-3-large` - Higher quality embeddings
 
+Assistant fields without a normalized representation, including custom tool
+calls, are retained in `Message.Extra["openai"]["response_message"]`. Preserve
+this metadata when replaying the assistant message. The adapter rejects replay
+when normalized content or tool calls conflict with the retained message;
+remove `response_message` before editing those fields.
+
 ### z.ai
 
 z.ai provides access to the GLM model family through an OpenAI-compatible API.
