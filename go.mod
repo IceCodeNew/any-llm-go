@@ -3,7 +3,7 @@ module github.com/mozilla-ai/any-llm-go
 go 1.26.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.41.0
+	github.com/anthropics/anthropic-sdk-go v1.46.0
 	github.com/google/uuid v1.6.0
 	github.com/mozilla-ai/any-llm-platform-client-go v0.0.1
 	github.com/ollama/ollama v0.23.2
@@ -11,6 +11,8 @@ require (
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/genai v1.67.0
 )
+
+require github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0 // indirect
 
 require (
 	cloud.google.com/go v0.116.0 // indirect
@@ -25,10 +27,8 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
-	github.com/rogpeppe/go-internal v1.12.0 // indirect
-	github.com/standard-webhooks/standard-webhooks/libraries v0.0.0-20260427160145-3afa6683f8b2 // indirect
+	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -44,6 +44,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
-	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
