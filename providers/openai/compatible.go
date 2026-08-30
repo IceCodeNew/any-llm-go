@@ -66,6 +66,18 @@ type CompatibleConfig struct {
 	// Capabilities describes what the provider supports.
 	Capabilities providers.Capabilities
 
+	// ChatCompletionRequestTransform is an optional function that modifies the chat
+	// completion request after convertParams() builds it and before it is serialized
+	// to the wire. Providers that are not fully OpenAI-compatible use this to adjust
+	// wire-level fields (e.g. swapping max_completion_tokens back to max_tokens).
+	// The pointer refers to a locally-constructed value owned by the caller; the
+	// function must not retain it beyond the call. Nil means no transformation.
+	ChatCompletionRequestTransform func(*openai.ChatCompletionNewParams)
+
+	// ClientOptions, when non-empty, replaces the default client construction
+	// (API key, HTTP client, and base URL).
+	ClientOptions []option.RequestOption
+
 	// DefaultAPIKey is used when RequireAPIKey is false (e.g., for local servers).
 	DefaultAPIKey string
 
@@ -74,14 +86,6 @@ type CompatibleConfig struct {
 
 	// Name is the provider name used in error messages.
 	Name string
-
-	// ChatCompletionRequestTransform is an optional function that modifies the chat
-	// completion request after convertParams() builds it and before it is serialized
-	// to the wire. Providers that are not fully OpenAI-compatible use this to adjust
-	// wire-level fields (e.g. swapping max_completion_tokens back to max_tokens).
-	// The pointer refers to a locally-constructed value owned by the caller; the
-	// function must not retain it beyond the call. Nil means no transformation.
-	ChatCompletionRequestTransform func(*openai.ChatCompletionNewParams)
 
 	// RequireAPIKey indicates whether an API key is required.
 	RequireAPIKey bool
@@ -149,13 +153,15 @@ func NewCompatible(compatCfg CompatibleConfig, opts ...config.Option) (*Compatib
 		apiKey = compatCfg.DefaultAPIKey
 	}
 
-	clientOpts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
-		option.WithHTTPClient(cfg.HTTPClient()),
-	}
-
-	if baseURL != "" {
-		clientOpts = append(clientOpts, option.WithBaseURL(baseURL))
+	clientOpts := compatCfg.ClientOptions
+	if len(clientOpts) == 0 {
+		clientOpts = []option.RequestOption{
+			option.WithAPIKey(apiKey),
+			option.WithHTTPClient(cfg.HTTPClient()),
+		}
+		if baseURL != "" {
+			clientOpts = append(clientOpts, option.WithBaseURL(baseURL))
+		}
 	}
 
 	return &CompatibleProvider{
@@ -213,6 +219,14 @@ func (p *CompatibleProvider) CompletionStream(
 			p.compatibleConfig.ChatCompletionRequestTransform(&req)
 		}
 		stream := p.client.Chat.Completions.NewStreaming(ctx, req)
+		defer func() {
+			if err := stream.Close(); err != nil {
+				select {
+				case errs <- fmt.Errorf("close completion stream: %w", err):
+				default:
+				}
+			}
+		}()
 
 		for stream.Next() {
 			chunk := stream.Current()
@@ -603,9 +617,10 @@ func convertParams(params providers.CompletionParams, name string) openai.ChatCo
 		req.User = openai.String(params.User)
 	}
 
-	// auto is the any-llm default sentinel. OpenAI documents none as an
-	// explicit effort, so it must reach the wire unchanged.
+	// auto is the any-llm default sentinel. OpenAI and Azure both document none
+	// as an explicit effort, so it must reach the wire unchanged.
 	// https://developers.openai.com/api/docs/guides/reasoning
+	// https://learn.microsoft.com/azure/ai-foundry/openai/how-to/reasoning
 	if params.ReasoningEffort != "" && params.ReasoningEffort != providers.ReasoningEffortAuto {
 		req.ReasoningEffort = shared.ReasoningEffort(params.ReasoningEffort)
 	}
