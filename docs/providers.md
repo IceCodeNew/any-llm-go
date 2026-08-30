@@ -134,6 +134,12 @@ provider, err := gemini.New(anyllm.WithAPIKey("your-key"))
 **Embedding Models:**
 - `gemini-embedding-001` - Text embeddings
 
+Gemini also supports PDF and generic file content, multi-input embeddings with output dimensions, native SDK tools through `gemini.NativeToolsExtraKey`, and the official Gemini Batch API.
+
+Executable code, code execution results, and other model parts without a normalized representation are retained in `Message.Extra["gemini"]["response_parts"]`. Preserve this metadata unchanged when replaying the assistant message. The stored parts are authoritative; remove `response_parts` before editing the message's normalized content, reasoning, or tool calls.
+
+Interactions and Responses are not available because the `google.golang.org/genai` client used by this provider has no public service for them. The provider does not bypass that SDK limitation with handwritten REST calls.
+
 **Reasoning/Thinking:**
 
 Gemini models support extended thinking for complex reasoning tasks:
