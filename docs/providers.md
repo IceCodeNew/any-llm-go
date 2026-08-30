@@ -6,9 +6,10 @@ any-llm-go supports multiple LLM providers through a unified interface. Each pro
 
 | Provider                | ID          | Completion | Streaming | Tools | Reasoning | Embeddings | List Models |
 |-------------------------|:------------|:----------:|:---------:|:-----:|:---------:|:----------:|:-----------:|
-| [Anthropic](#anthropic) | `anthropic` |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ❌      |
-| [DeepSeek](#deepseek)   | `deepseek`  |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ✅      |
-| [Gemini](#gemini)       | `gemini`    |     ✅      |     ✅     |   ✅   |     ✅     |     ✅      |      ✅      |
+| [Anthropic](#anthropic)     | `anthropic`    |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ❌      |
+| [Azure OpenAI](#azure-openai) | `azureopenai` |     ✅      |     ✅     |   ✅   |     ✅     |     ✅      |      ✅      |
+| [DeepSeek](#deepseek)       | `deepseek`     |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ✅      |
+| [Gemini](#gemini)           | `gemini`       |     ✅      |     ✅     |   ✅   |     ✅     |     ✅      |      ✅      |
 | [Groq](#groq)           | `groq`      |     ✅      |     ✅     |   ✅   |     ❌     |     ❌      |      ✅      |
 | [llama.cpp](#llamacpp)   | `llamacpp`  |     ✅      |     ✅     |   ✅   |     ❌     |     ✅      |      ✅      |
 | [Llamafile](#llamafile) | `llamafile` |     ✅      |     ✅     |   ✅   |     ❌     |     ✅      |      ✅      |
@@ -27,6 +28,51 @@ any-llm-go supports multiple LLM providers through a unified interface. Each pro
 - **List Models** - API to list available models
 
 ## Provider Details
+
+### Azure OpenAI
+
+```go
+import (
+    anyllm "github.com/mozilla-ai/any-llm-go"
+    "github.com/mozilla-ai/any-llm-go/providers/azureopenai"
+)
+
+provider, err := azureopenai.New(
+    anyllm.WithAPIKey("your-azure-openai-key"),
+    anyllm.WithBaseURL("https://example.openai.azure.com"),
+)
+
+// Or use Microsoft Entra ID. API key and token credential authentication
+// cannot be configured together.
+provider, err := azureopenai.New(
+    azureopenai.WithTokenCredential(credential),
+    anyllm.WithBaseURL("https://example.openai.azure.com"),
+)
+```
+
+**Environment Variables:** `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_AD_TOKEN`, `AZURE_OPENAI_ENDPOINT`
+
+`AZURE_OPENAI_AD_TOKEN` must contain a pre-acquired access token. The static
+environment adapter cannot refresh expired tokens. Use `WithTokenCredential`
+when automatic token refresh is required.
+
+The `Model` field is the Azure deployment name.
+
+Responses, Chat Completions, embeddings, and model operations use Azure's GA
+`/openai/v1/` routes without an `api-version` query. Image generation, speech,
+and transcription use the v1 preview routes with `api-version=preview`.
+
+The concrete `azureopenai.Provider` exposes the full Responses API through
+`CreateResponse`, `StreamResponse`, `RetrieveResponse`, `DeleteResponse`,
+`CancelResponse`, `ListResponseInputItems`, and `ReplayResponse`. It also exposes
+`GenerateImage`, `Transcribe`, and `Speech` with the official openai-go types.
+Moderation is not supported.
+
+Assistant fields without a normalized representation are retained in
+`Message.Extra["azureopenai"]["response_message"]`. Preserve this metadata when
+replaying the assistant message. The adapter rejects replay when normalized
+content or tool calls conflict with the retained message; remove
+`response_message` before editing those fields.
 
 ### Anthropic
 
@@ -519,7 +565,6 @@ The following providers are planned for future releases:
 | Cohere       | Planned                                           |
 | Together AI  | Planned                                           |
 | AWS Bedrock  | Planned                                           |
-| Azure OpenAI | Planned (use OpenAI with custom base URL for now) |
 
 ## Adding a New Provider
 
