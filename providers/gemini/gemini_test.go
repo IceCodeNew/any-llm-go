@@ -5,9 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	stderrors "errors"
+	"io"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genai"
 
@@ -16,6 +22,8 @@ import (
 	"github.com/mozilla-ai/any-llm-go/internal/testutil"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
+
+const gemini3FlashPreviewModel = "gemini-3-flash-preview"
 
 func TestNew(t *testing.T) {
 	t.Run("creates provider with API key", func(t *testing.T) {
@@ -55,6 +63,34 @@ func TestNew(t *testing.T) {
 		require.Equal(t, providerName, missingKeyErr.Provider)
 		require.Equal(t, envAPIKey, missingKeyErr.EnvVar)
 	})
+
+	t.Run("creates provider with custom base URL", func(t *testing.T) {
+		t.Parallel()
+
+		provider, err := New(
+			config.WithAPIKey("test-api-key"),
+			config.WithBaseURL("https://gemini-proxy.example"),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+	})
+}
+
+func TestInt32Conversions(t *testing.T) {
+	t.Parallel()
+
+	value, err := int32Value(math.MaxInt32, "seed")
+	require.NoError(t, err)
+	require.Equal(t, int32(math.MaxInt32), value)
+
+	if strconv.IntSize == 64 {
+		maxInt32 := int64(math.MaxInt32)
+		_, err = int32Value(int(maxInt32+1), "seed")
+		require.Error(t, err)
+	}
+
+	_, err = positiveInt32(0, "max_tokens")
+	require.Error(t, err)
 }
 
 func TestCapabilities(t *testing.T) {
@@ -65,9 +101,10 @@ func TestCapabilities(t *testing.T) {
 
 	caps := provider.Capabilities()
 
+	require.True(t, caps.Batch)
 	require.True(t, caps.Completion)
 	require.True(t, caps.CompletionImage)
-	require.False(t, caps.CompletionPDF)
+	require.True(t, caps.CompletionPDF)
 	require.True(t, caps.CompletionReasoning)
 	require.True(t, caps.CompletionStreaming)
 	require.True(t, caps.CompletionTools)
@@ -86,7 +123,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.NotNil(t, system)
 		require.Len(t, system.Parts, 1)
@@ -103,13 +141,47 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.NotNil(t, system)
-		require.Contains(t, system.Parts[0].Text, "First part.")
-		require.Contains(t, system.Parts[0].Text, "Second part.")
+		require.Equal(t, "First part.", system.Parts[0].Text)
+		require.Equal(t, "Second part.", system.Parts[1].Text)
 		require.Len(t, result, 1)
 	})
+
+	t.Run("preserves ordered system text parts", func(t *testing.T) {
+		t.Parallel()
+
+		messages := []providers.Message{{
+			Role: providers.RoleSystem,
+			Content: []providers.ContentPart{
+				{Type: contentPartTypeText, Text: "first"},
+				{Type: contentPartTypeText, Text: "second"},
+			},
+		}}
+
+		_, system, err := convertMessages(messages)
+		require.NoError(t, err)
+		require.Equal(t, "first", system.Parts[0].Text)
+		require.Equal(t, "second", system.Parts[1].Text)
+	})
+
+	for _, part := range []providers.ContentPart{
+		{Type: contentPartTypeImageURL, ImageURL: &providers.ImageURL{URL: "https://example.com/image.png"}},
+		{Type: contentPartTypeFile, File: &providers.File{FileData: "https://example.com/file.pdf"}},
+		{Type: "audio"},
+	} {
+		t.Run("rejects unsupported system part "+part.Type, func(t *testing.T) {
+			t.Parallel()
+
+			_, _, err := convertMessages([]providers.Message{{
+				Role:    providers.RoleSystem,
+				Content: []providers.ContentPart{part},
+			}})
+			require.ErrorIs(t, err, errors.ErrInvalidRequest)
+		})
+	}
 
 	t.Run("converts user message", func(t *testing.T) {
 		t.Parallel()
@@ -118,7 +190,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Nil(t, system)
 		require.Len(t, result, 1)
@@ -133,13 +206,28 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleAssistant, Content: "Hi there!"},
 		}
 
-		result, system := convertMessages(messages)
+		result, system, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Nil(t, system)
 		require.Len(t, result, 2)
 		require.Equal(t, roleModel, result[1].Role)
 		require.Equal(t, "Hi there!", result[1].Parts[0].Text)
 	})
+
+	for name, content := range map[string]any{
+		"empty string": "",
+		"empty list":   []providers.ContentPart{},
+	} {
+		t.Run("preserves assistant "+name, func(t *testing.T) {
+			t.Parallel()
+
+			result, _, err := convertMessages([]providers.Message{{Role: providers.RoleAssistant, Content: content}})
+			require.NoError(t, err)
+			require.Len(t, result, 1)
+			require.Equal(t, roleModel, result[0].Role)
+		})
+	}
 
 	t.Run("converts assistant message with tool calls", func(t *testing.T) {
 		t.Parallel()
@@ -162,12 +250,14 @@ func TestConvertMessages(t *testing.T) {
 			},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 2)
 		require.Equal(t, roleModel, result[1].Role)
 		require.NotNil(t, result[1].Parts[0].FunctionCall)
 		require.Equal(t, "get_weather", result[1].Parts[0].FunctionCall.Name)
+		require.Equal(t, "call_123", result[1].Parts[0].FunctionCall.ID)
 	})
 
 	t.Run("converts tool result message with plain text", func(t *testing.T) {
@@ -175,15 +265,22 @@ func TestConvertMessages(t *testing.T) {
 
 		messages := []providers.Message{
 			{Role: providers.RoleUser, Content: "Hello"},
-			{Role: providers.RoleTool, Content: "sunny, 22°C", Name: "get_weather"},
+			{
+				Role:       providers.RoleTool,
+				Content:    "sunny, 22°C",
+				Name:       "get_weather",
+				ToolCallID: "call_123",
+			},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 2)
 		require.Equal(t, "user", result[1].Role)
 		require.NotNil(t, result[1].Parts[0].FunctionResponse)
 		require.Equal(t, "get_weather", result[1].Parts[0].FunctionResponse.Name)
+		require.Equal(t, "call_123", result[1].Parts[0].FunctionResponse.ID)
 		// Plain text is wrapped as {"result": "sunny, 22°C"}.
 		require.Equal(t, "sunny, 22°C", result[1].Parts[0].FunctionResponse.Response["result"])
 	})
@@ -196,7 +293,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleTool, Content: `{"temperature": 22, "condition": "sunny"}`, Name: "get_weather"},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 2)
 		require.NotNil(t, result[1].Parts[0].FunctionResponse)
@@ -211,7 +309,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleTool, Content: "result data"},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 1)
 		require.Equal(t, "function", result[0].Parts[0].FunctionResponse.Name)
@@ -224,7 +323,8 @@ func TestConvertMessages(t *testing.T) {
 			{Role: providers.RoleUser, Content: "Hello"},
 		}
 
-		_, system := convertMessages(messages)
+		_, system, err := convertMessages(messages)
+		require.NoError(t, err)
 		require.Nil(t, system)
 	})
 
@@ -253,12 +353,57 @@ func TestConvertMessages(t *testing.T) {
 			},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 2)
 		require.Equal(t, roleModel, result[1].Role)
 		require.NotNil(t, result[1].Parts[0].FunctionCall)
 		require.Equal(t, []byte("real-signature"), result[1].Parts[0].ThoughtSignature)
+	})
+
+	t.Run("preserves assistant content parts beside tool calls", func(t *testing.T) {
+		t.Parallel()
+
+		messages := []providers.Message{{
+			Role: providers.RoleAssistant,
+			Content: []providers.ContentPart{
+				{Type: contentPartTypeText, Text: "I found this image."},
+				{Type: contentPartTypeImageURL, ImageURL: &providers.ImageURL{URL: "https://example.com/result.png"}},
+			},
+			ToolCalls: []providers.ToolCall{{
+				ID:       "call_123",
+				Type:     "function",
+				Function: providers.FunctionCall{Name: "inspect_image", Arguments: `{}`},
+			}},
+		}}
+
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Len(t, result[0].Parts, 3)
+		require.Equal(t, "I found this image.", result[0].Parts[0].Text)
+		require.Equal(t, "https://example.com/result.png", result[0].Parts[1].FileData.FileURI)
+		require.Equal(t, "inspect_image", result[0].Parts[2].FunctionCall.Name)
+	})
+
+	t.Run("converts tool call with empty arguments", func(t *testing.T) {
+		t.Parallel()
+
+		messages := []providers.Message{{
+			Role: providers.RoleAssistant,
+			ToolCalls: []providers.ToolCall{{
+				ID:       "call_123",
+				Type:     "function",
+				Function: providers.FunctionCall{Name: "get_weather"},
+			}},
+		}}
+
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
+
+		require.Len(t, result, 1)
+		require.Empty(t, result[0].Parts[0].FunctionCall.Args)
 	})
 
 	t.Run("tool call without signature uses bypass value", func(t *testing.T) {
@@ -282,22 +427,25 @@ func TestConvertMessages(t *testing.T) {
 			},
 		}
 
-		result, _ := convertMessages(messages)
+		result, _, err := convertMessages(messages)
+		require.NoError(t, err)
 
 		require.Len(t, result, 2)
 		require.NotNil(t, result[1].Parts[0].FunctionCall)
 		require.Equal(t, []byte(thoughtSignatureBypass), result[1].Parts[0].ThoughtSignature)
 	})
 
-	t.Run("unknown role returns nil", func(t *testing.T) {
+	t.Run("public conversion rejects unknown role", func(t *testing.T) {
 		t.Parallel()
 
-		messages := []providers.Message{
-			{Role: "unknown", Content: "Hello"},
-		}
-
-		result, _ := convertMessages(messages)
-		require.Empty(t, result)
+		provider := &Provider{}
+		contents, cfg, err := provider.convertParams(providers.CompletionParams{
+			Model:    "gemini-2.5-flash",
+			Messages: []providers.Message{{Role: "unknown", Content: "Hello"}},
+		})
+		require.Error(t, err)
+		require.Nil(t, contents)
+		require.Nil(t, cfg)
 	})
 }
 
@@ -320,6 +468,11 @@ func TestConvertFinishReason(t *testing.T) {
 			expected: providers.FinishReasonLength,
 		},
 		{
+			name:     "TOO_MANY_TOOL_CALLS",
+			input:    genai.FinishReasonTooManyToolCalls,
+			expected: providers.FinishReasonToolCalls,
+		},
+		{
 			name:     "SAFETY",
 			input:    genai.FinishReasonSafety,
 			expected: providers.FinishReasonContentFilter,
@@ -327,7 +480,7 @@ func TestConvertFinishReason(t *testing.T) {
 		{
 			name:     "RECITATION",
 			input:    genai.FinishReasonRecitation,
-			expected: providers.FinishReasonStop,
+			expected: providers.FinishReasonContentFilter,
 		},
 		{
 			name:     "BLOCKLIST",
@@ -394,7 +547,8 @@ func TestConvertToolChoice(t *testing.T) {
 	t.Run("auto string", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertToolChoice("auto")
+		result, err := convertToolChoice("auto")
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Equal(t, genai.FunctionCallingConfigModeAuto, result.FunctionCallingConfig.Mode)
 	})
@@ -402,7 +556,8 @@ func TestConvertToolChoice(t *testing.T) {
 	t.Run("none string", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertToolChoice("none")
+		result, err := convertToolChoice("none")
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Equal(t, genai.FunctionCallingConfigModeNone, result.FunctionCallingConfig.Mode)
 	})
@@ -410,7 +565,8 @@ func TestConvertToolChoice(t *testing.T) {
 	t.Run("required string", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertToolChoice("required")
+		result, err := convertToolChoice("required")
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Equal(t, genai.FunctionCallingConfigModeAny, result.FunctionCallingConfig.Mode)
 	})
@@ -418,20 +574,22 @@ func TestConvertToolChoice(t *testing.T) {
 	t.Run("specific function", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertToolChoice(providers.ToolChoice{
+		result, err := convertToolChoice(providers.ToolChoice{
 			Type:     "function",
 			Function: &providers.ToolChoiceFunction{Name: "get_weather"},
 		})
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Equal(t, genai.FunctionCallingConfigModeAny, result.FunctionCallingConfig.Mode)
 		require.Contains(t, result.FunctionCallingConfig.AllowedFunctionNames, "get_weather")
 	})
 
-	t.Run("unknown returns nil", func(t *testing.T) {
+	t.Run("unknown returns error", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertToolChoice("unknown_value")
+		result, err := convertToolChoice("unknown_value")
 		require.Nil(t, result)
+		require.Error(t, err)
 	})
 }
 
@@ -535,6 +693,12 @@ func TestThinkingBudget(t *testing.T) {
 		ok       bool
 	}{
 		{
+			name:     "minimal effort",
+			effort:   providers.ReasoningEffortMinimal,
+			expected: thinkingBudgetMinimal,
+			ok:       true,
+		},
+		{
 			name:     "low effort",
 			effort:   providers.ReasoningEffortLow,
 			expected: thinkingBudgetLow,
@@ -550,6 +714,18 @@ func TestThinkingBudget(t *testing.T) {
 			name:     "high effort",
 			effort:   providers.ReasoningEffortHigh,
 			expected: thinkingBudgetHigh,
+			ok:       true,
+		},
+		{
+			name:     "xhigh effort",
+			effort:   providers.ReasoningEffortXHigh,
+			expected: thinkingBudgetXHigh,
+			ok:       true,
+		},
+		{
+			name:     "max effort",
+			effort:   providers.ReasoningEffortMax,
+			expected: thinkingBudgetMax,
 			ok:       true,
 		},
 		{
@@ -584,37 +760,208 @@ func TestApplyThinking(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyThinking(cfg, "")
+		require.NoError(t, applyThinking(cfg, "gemini-2.5-flash", ""))
 		require.Nil(t, cfg.ThinkingConfig)
 	})
 
-	t.Run("none effort does nothing", func(t *testing.T) {
+	t.Run("none effort disables thoughts on Gemini 2.5", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyThinking(cfg, providers.ReasoningEffortNone)
+		require.NoError(t, applyThinking(cfg, "gemini-2.5-flash", providers.ReasoningEffortNone))
+		require.NotNil(t, cfg.ThinkingConfig)
+		require.False(t, cfg.ThinkingConfig.IncludeThoughts)
+		require.NotNil(t, cfg.ThinkingConfig.ThinkingBudget)
+		require.Equal(t, int32(0), *cfg.ThinkingConfig.ThinkingBudget)
+
+		wire, err := json.Marshal(cfg)
+		require.NoError(t, err)
+		require.JSONEq(t, `{"thinkingConfig":{"thinkingBudget":0}}`, string(wire))
+	})
+
+	t.Run("none effort is rejected when Gemini 3 cannot disable thinking", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &genai.GenerateContentConfig{}
+		err := applyThinking(cfg, gemini3FlashPreviewModel, providers.ReasoningEffortNone)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
 		require.Nil(t, cfg.ThinkingConfig)
 	})
 
-	t.Run("low effort sets thinking config", func(t *testing.T) {
+	t.Run("none effort is rejected when Gemini 2.5 Pro cannot disable thinking", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyThinking(cfg, providers.ReasoningEffortLow)
+		err := applyThinking(cfg, "gemini-2.5-pro", providers.ReasoningEffortNone)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
+		require.Nil(t, cfg.ThinkingConfig)
+	})
+
+	t.Run("none effort disables thinking on Gemini 2.5 preview Flash models", func(t *testing.T) {
+		t.Parallel()
+
+		for _, model := range []string{
+			"gemini-2.5-flash-preview-05-20",
+			"models/gemini-2.5-flash-lite-preview-06-17",
+		} {
+			cfg := &genai.GenerateContentConfig{}
+			require.NoError(t, applyThinking(cfg, model, providers.ReasoningEffortNone))
+			require.NotNil(t, cfg.ThinkingConfig)
+			require.Equal(t, int32(0), *cfg.ThinkingConfig.ThinkingBudget)
+		}
+	})
+
+	t.Run("auto effort does nothing", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &genai.GenerateContentConfig{}
+		require.NoError(t, applyThinking(cfg, "gemini-2.5-flash", providers.ReasoningEffortAuto))
+		require.Nil(t, cfg.ThinkingConfig)
+	})
+
+	t.Run("low effort sets thinking budget", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &genai.GenerateContentConfig{}
+		require.NoError(t, applyThinking(cfg, "gemini-2.5-flash", providers.ReasoningEffortLow))
 		require.NotNil(t, cfg.ThinkingConfig)
 		require.True(t, cfg.ThinkingConfig.IncludeThoughts)
 		require.Equal(t, thinkingBudgetLow, *cfg.ThinkingConfig.ThinkingBudget)
+		require.Empty(t, cfg.ThinkingConfig.ThinkingLevel)
+	})
+
+	t.Run("minimal effort sets thinking budget", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &genai.GenerateContentConfig{}
+		require.NoError(t, applyThinking(cfg, "gemini-2.5-flash", providers.ReasoningEffortMinimal))
+		require.NotNil(t, cfg.ThinkingConfig)
+		require.Equal(t, thinkingBudgetMinimal, *cfg.ThinkingConfig.ThinkingBudget)
+	})
+
+	t.Run("minimal effort respects Gemini 2.5 Flash-Lite lower bound", func(t *testing.T) {
+		t.Parallel()
+
+		for _, model := range []string{
+			"gemini-2.5-flash-lite",
+			"gemini-2.5-flash-lite-preview-06-17",
+		} {
+			cfg := &genai.GenerateContentConfig{}
+			require.NoError(t, applyThinking(cfg, model, providers.ReasoningEffortMinimal))
+			require.NotNil(t, cfg.ThinkingConfig)
+			require.Equal(t, thinkingBudgetMinimalLite, *cfg.ThinkingConfig.ThinkingBudget)
+		}
 	})
 
 	t.Run("high effort sets thinking config", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyThinking(cfg, providers.ReasoningEffortHigh)
+		require.NoError(t, applyThinking(cfg, "gemini-2.5-flash", providers.ReasoningEffortHigh))
 		require.NotNil(t, cfg.ThinkingConfig)
 		require.True(t, cfg.ThinkingConfig.IncludeThoughts)
 		require.Equal(t, thinkingBudgetHigh, *cfg.ThinkingConfig.ThinkingBudget)
 	})
+
+	t.Run("caps maximum effort for Gemini 2.5 Flash models", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			model  string
+			effort providers.ReasoningEffort
+		}{
+			{model: "gemini-2.5-flash", effort: providers.ReasoningEffortXHigh},
+			{
+				model:  "projects/p/locations/l/publishers/google/models/gemini-2.5-flash-lite",
+				effort: providers.ReasoningEffortMax,
+			},
+		}
+
+		for _, tc := range tests {
+			cfg := &genai.GenerateContentConfig{}
+			require.NoError(t, applyThinking(cfg, tc.model, tc.effort))
+			require.NotNil(t, cfg.ThinkingConfig)
+			require.Equal(t, thinkingBudgetHigh, *cfg.ThinkingConfig.ThinkingBudget)
+		}
+	})
+
+	t.Run("keeps maximum effort for Gemini 2.5 Pro", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &genai.GenerateContentConfig{}
+		require.NoError(t, applyThinking(cfg, "gemini-2.5-pro", providers.ReasoningEffortMax))
+		require.NotNil(t, cfg.ThinkingConfig)
+		require.Equal(t, thinkingBudgetMax, *cfg.ThinkingConfig.ThinkingBudget)
+	})
+
+	t.Run("gemini 3 uses thinking level", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &genai.GenerateContentConfig{}
+		require.NoError(t, applyThinking(cfg, gemini3FlashPreviewModel, providers.ReasoningEffortMinimal))
+		require.NotNil(t, cfg.ThinkingConfig)
+		require.True(t, cfg.ThinkingConfig.IncludeThoughts)
+		require.Equal(t, genai.ThinkingLevelMinimal, cfg.ThinkingConfig.ThinkingLevel)
+		require.Nil(t, cfg.ThinkingConfig.ThinkingBudget)
+	})
+
+	t.Run("unknown effort returns error", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &genai.GenerateContentConfig{}
+		err := applyThinking(cfg, "gemini-2.5-flash", "custom")
+		require.Error(t, err)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
+	})
+}
+
+func TestSupportsDisabledThinkingBudget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{model: "gemini-2.5-flash", want: true},
+		{model: "models/gemini-2.5-flash-lite", want: true},
+		{model: "gemini-2.5-flash-preview-05-20", want: true},
+		{model: "models/gemini-2.5-flash-lite-preview-06-17", want: true},
+		{model: "gemini-2.5-pro", want: false},
+		{model: "gemini-2.5-flash-future", want: false},
+		{model: gemini3FlashPreviewModel, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, supportsDisabledThinkingBudget(tc.model))
+		})
+	}
+}
+
+func TestUsesThinkingLevel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		model string
+		want  bool
+	}{
+		{name: "2.5 flash", model: "gemini-2.5-flash", want: false},
+		{name: "3.0 flash", model: "gemini-3.0-flash", want: true},
+		{name: "3 flash", model: gemini3FlashPreviewModel, want: true},
+		{name: "3 pro preview", model: "gemini-3-pro-preview", want: true},
+		{name: "3.5 flash", model: "gemini-3.5-flash", want: true},
+		{name: "4 pro", model: "models/gemini-4-pro", want: true},
+		{name: "unrelated", model: "gpt-4o", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, usesThinkingLevel(tc.model))
+		})
+	}
 }
 
 func TestConvertImagePart(t *testing.T) {
@@ -624,7 +971,8 @@ func TestConvertImagePart(t *testing.T) {
 		t.Parallel()
 
 		img := &providers.ImageURL{URL: "data:image/jpeg;base64,/9j/4AAQSkZJRg=="}
-		result := convertImagePart(img)
+		result, err := convertImagePart(img)
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.InlineData)
 		require.Equal(t, "image/jpeg", result.InlineData.MIMEType)
@@ -634,11 +982,30 @@ func TestConvertImagePart(t *testing.T) {
 		t.Parallel()
 
 		img := &providers.ImageURL{URL: "https://example.com/image.png"}
-		result := convertImagePart(img)
+		result, err := convertImagePart(img)
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.FileData)
 		require.Equal(t, "https://example.com/image.png", result.FileData.FileURI)
 	})
+}
+
+func TestConvertMessagesReturnsMalformedMediaError(t *testing.T) {
+	t.Parallel()
+
+	messages := []providers.Message{{
+		Role: providers.RoleUser,
+		Content: []providers.ContentPart{{
+			Type:     contentPartTypeImageURL,
+			ImageURL: &providers.ImageURL{URL: "data:image/png;base64,not-valid-base64"},
+		}},
+	}}
+
+	contents, system, err := convertMessages(messages)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+	require.Nil(t, contents)
+	require.Nil(t, system)
 }
 
 func TestConvertEmbeddingInput(t *testing.T) {
@@ -647,7 +1014,9 @@ func TestConvertEmbeddingInput(t *testing.T) {
 	t.Run("string input", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertEmbeddingInput("hello world")
+		results, err := convertEmbeddingInputs("hello world")
+		require.NoError(t, err)
+		result := results[0]
 		require.NotNil(t, result)
 		require.Len(t, result.Parts, 1)
 		require.Equal(t, "hello world", result.Parts[0].Text)
@@ -656,11 +1025,11 @@ func TestConvertEmbeddingInput(t *testing.T) {
 	t.Run("string slice input", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertEmbeddingInput([]string{"hello", "world"})
-		require.NotNil(t, result)
-		require.Len(t, result.Parts, 2)
-		require.Equal(t, "hello", result.Parts[0].Text)
-		require.Equal(t, "world", result.Parts[1].Text)
+		results, err := convertEmbeddingInputs([]string{"hello", "world"})
+		require.NoError(t, err)
+		require.Len(t, results, 2)
+		require.Equal(t, "hello", results[0].Parts[0].Text)
+		require.Equal(t, "world", results[1].Parts[0].Text)
 	})
 }
 
@@ -856,12 +1225,14 @@ func TestThoughtSignatureRoundTrip(t *testing.T) {
 
 	// Simulate an API response with a ThoughtSignature on a function call.
 	originalSig := []byte("opaque-signature-from-gemini-api-xyz123")
+	originalID := "call_gemini_123"
 
 	resp := &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{{
 			Content: &genai.Content{
 				Parts: []*genai.Part{{
 					FunctionCall: &genai.FunctionCall{
+						ID:   originalID,
 						Name: "search",
 						Args: map[string]any{"query": "test"},
 					},
@@ -878,6 +1249,7 @@ func TestThoughtSignatureRoundTrip(t *testing.T) {
 	require.Len(t, result.Choices[0].Message.ToolCalls, 1)
 
 	capturedTC := result.Choices[0].Message.ToolCalls[0]
+	require.Equal(t, originalID, capturedTC.ID)
 	require.NotNil(t, capturedTC.Extra)
 
 	// Build a message with the captured tool call (as a caller would).
@@ -888,48 +1260,44 @@ func TestThoughtSignatureRoundTrip(t *testing.T) {
 	}
 
 	// Replay via convertAssistantMessage.
-	content := convertAssistantMessage(assistantMsg)
+	content, err := convertAssistantMessage(assistantMsg)
+	require.NoError(t, err)
 	require.NotNil(t, content)
 	require.Len(t, content.Parts, 1)
 
 	// Verify the signature round-tripped identically.
 	require.Equal(t, originalSig, content.Parts[0].ThoughtSignature)
+	require.Equal(t, originalID, content.Parts[0].FunctionCall.ID)
 }
 
 func TestThoughtSignatureWireFormat(t *testing.T) {
 	t.Parallel()
 
-	t.Run("bypass value is base64-encoded by json.Marshal", func(t *testing.T) {
+	t.Run("request hook sends the documented literal bypass", func(t *testing.T) {
 		t.Parallel()
 
-		// Build a message with no Extra — should get the bypass.
-		msg := providers.Message{
-			Role: providers.RoleAssistant,
-			ToolCalls: []providers.ToolCall{{
-				ID:   "call_1",
-				Type: "function",
-				Function: providers.FunctionCall{
-					Name:      "search",
-					Arguments: `{"q":"test"}`,
-				},
-			}},
-		}
-
-		content := convertAssistantMessage(msg)
-		require.Len(t, content.Parts, 1)
-
-		// Marshal the Part as the SDK would before sending.
-		raw, err := json.Marshal(content.Parts[0])
+		provider := &Provider{}
+		contents, cfg, err := provider.convertParams(providers.CompletionParams{
+			Model: gemini3FlashPreviewModel,
+			Messages: []providers.Message{{Role: providers.RoleAssistant, ToolCalls: []providers.ToolCall{{
+				ID: "call_1", Type: "function",
+				Function: providers.FunctionCall{Name: "search", Arguments: `{"q":"test"}`},
+			}}}},
+		})
 		require.NoError(t, err)
+		require.True(t, hasThoughtSignatureBypass(contents))
+		require.NotNil(t, cfg.HTTPOptions)
+		require.NotNil(t, cfg.HTTPOptions.ExtrasRequestProvider)
 
-		wireJSON := string(raw)
-
-		// The literal bypass must NOT appear — json.Marshal base64-encodes []byte.
-		require.NotContains(t, wireJSON, thoughtSignatureBypass)
-
-		// The base64-encoded form must appear instead.
 		encoded := base64.StdEncoding.EncodeToString([]byte(thoughtSignatureBypass))
-		require.Contains(t, wireJSON, encoded)
+		body := map[string]any{"contents": []map[string]any{{
+			"parts": []map[string]any{{"thoughtSignature": encoded}},
+		}}}
+		result := cfg.HTTPOptions.ExtrasRequestProvider(body)
+		raw, err := json.Marshal(result)
+		require.NoError(t, err)
+		require.Contains(t, string(raw), `"thoughtSignature":"`+thoughtSignatureBypass+`"`)
+		require.NotContains(t, string(raw), encoded)
 	})
 
 	t.Run("real signature is base64-encoded by json.Marshal", func(t *testing.T) {
@@ -953,23 +1321,50 @@ func TestThoughtSignatureWireFormat(t *testing.T) {
 			}},
 		}
 
-		content := convertAssistantMessage(msg)
+		content, err := convertAssistantMessage(msg)
+		require.NoError(t, err)
 		require.Len(t, content.Parts, 1)
-
-		// The Part should have the raw bytes.
 		require.Equal(t, realSig, content.Parts[0].ThoughtSignature)
 
-		// When marshaled, json.Marshal base64-encodes the raw bytes — which
-		// produces a double-encoded value on the wire. This is the expected
-		// (if unfortunate) behaviour until the upstream SDK changes
-		// ThoughtSignature from []byte to string.
 		raw, err := json.Marshal(content.Parts[0])
 		require.NoError(t, err)
-
-		wireJSON := string(raw)
-		doubleEncoded := base64.StdEncoding.EncodeToString(realSig)
-		require.Contains(t, wireJSON, doubleEncoded)
+		require.Contains(t, string(raw), storedB64)
 	})
+}
+
+func TestThoughtSignatureBypassWireFormat(t *testing.T) {
+	t.Parallel()
+
+	var requestBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requestBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, err = w.Write([]byte(`{
+			"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}],
+			"modelVersion":"gemini-3-flash-preview",
+			"responseId":"response-1"
+		}`))
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+
+	provider, err := New(config.WithAPIKey("test-key"), config.WithBaseURL(server.URL))
+	require.NoError(t, err)
+	_, err = provider.Completion(t.Context(), providers.CompletionParams{
+		Model: gemini3FlashPreviewModel,
+		Messages: []providers.Message{{Role: providers.RoleAssistant, ToolCalls: []providers.ToolCall{{
+			ID: "call_1", Type: "function",
+			Function: providers.FunctionCall{Name: "search", Arguments: `{"q":"test"}`},
+		}}}},
+	})
+	require.NoError(t, err)
+	require.Contains(t, string(requestBody), `"thoughtSignature":"`+thoughtSignatureBypass+`"`)
+	require.NotContains(t, string(requestBody), base64.StdEncoding.EncodeToString([]byte(thoughtSignatureBypass)))
 }
 
 func TestStreamStateProcessResponse(t *testing.T) {
@@ -1025,6 +1420,7 @@ func TestStreamStateProcessResponse(t *testing.T) {
 				Content: &genai.Content{
 					Parts: []*genai.Part{{
 						FunctionCall: &genai.FunctionCall{
+							ID:   "call_gemini_123",
 							Name: "get_weather",
 							Args: map[string]any{"location": "Paris"},
 						},
@@ -1037,6 +1433,7 @@ func TestStreamStateProcessResponse(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, chunks, 1)
 		require.Len(t, chunks[0].Choices[0].Delta.ToolCalls, 1)
+		require.Equal(t, "call_gemini_123", chunks[0].Choices[0].Delta.ToolCalls[0].ID)
 		require.Equal(t, "get_weather", chunks[0].Choices[0].Delta.ToolCalls[0].Function.Name)
 		require.Contains(t, chunks[0].Choices[0].Delta.ToolCalls[0].Function.Arguments, "Paris")
 	})
@@ -1129,7 +1526,7 @@ func TestStreamStateProcessResponse(t *testing.T) {
 		require.Nil(t, tc.Extra)
 	})
 
-	t.Run("returns empty slice for empty candidates", func(t *testing.T) {
+	t.Run("does not emit metadata-only chunks without candidates", func(t *testing.T) {
 		t.Parallel()
 
 		state, err := newStreamState("test-model")
@@ -1139,6 +1536,8 @@ func TestStreamStateProcessResponse(t *testing.T) {
 		chunks, err := state.processResponse(resp)
 		require.NoError(t, err)
 		require.Empty(t, chunks)
+		final := state.finalChunk()
+		require.Len(t, final.Choices[0].Delta.Extra[providerName][extraKeyResponseEvents], 1)
 	})
 }
 
@@ -1203,13 +1602,14 @@ func TestConvertParams(t *testing.T) {
 	t.Run("json_object sets mime type", func(t *testing.T) {
 		t.Parallel()
 
-		_, cfg := provider.convertParams(providers.CompletionParams{
+		_, cfg, err := provider.convertParams(providers.CompletionParams{
 			Model:    "gemini-2.0-flash",
 			Messages: []providers.Message{{Role: providers.RoleUser, Content: "hi"}},
 			ResponseFormat: &providers.ResponseFormat{
 				Type: responseFormatJSON,
 			},
 		})
+		require.NoError(t, err)
 
 		require.Equal(t, responseMIMETypeJSON, cfg.ResponseMIMEType)
 		require.Nil(t, cfg.ResponseJsonSchema)
@@ -1227,7 +1627,7 @@ func TestConvertParams(t *testing.T) {
 			"required": []string{"name", "population"},
 		}
 
-		_, cfg := provider.convertParams(providers.CompletionParams{
+		_, cfg, err := provider.convertParams(providers.CompletionParams{
 			Model:    "gemini-2.0-flash",
 			Messages: []providers.Message{{Role: providers.RoleUser, Content: "hi"}},
 			ResponseFormat: &providers.ResponseFormat{
@@ -1238,6 +1638,7 @@ func TestConvertParams(t *testing.T) {
 				},
 			},
 		})
+		require.NoError(t, err)
 
 		require.Equal(t, responseMIMETypeJSON, cfg.ResponseMIMEType)
 		require.Equal(t, schema, cfg.ResponseJsonSchema)
@@ -1246,13 +1647,26 @@ func TestConvertParams(t *testing.T) {
 	t.Run("nil response format leaves config unchanged", func(t *testing.T) {
 		t.Parallel()
 
-		_, cfg := provider.convertParams(providers.CompletionParams{
+		_, cfg, err := provider.convertParams(providers.CompletionParams{
 			Model:    "gemini-2.0-flash",
 			Messages: []providers.Message{{Role: providers.RoleUser, Content: "hi"}},
 		})
+		require.NoError(t, err)
 
 		require.Empty(t, cfg.ResponseMIMEType)
 		require.Nil(t, cfg.ResponseJsonSchema)
+	})
+
+	t.Run("unknown reasoning effort returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, err := provider.convertParams(providers.CompletionParams{
+			Model:           "gemini-2.5-flash",
+			Messages:        []providers.Message{{Role: providers.RoleUser, Content: "hi"}},
+			ReasoningEffort: "custom",
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
 	})
 }
 
@@ -1376,15 +1790,17 @@ func TestApplyResponseFormat(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyResponseFormat(cfg, &providers.ResponseFormat{Type: "json_object"})
+		err := applyResponseFormat(cfg, &providers.ResponseFormat{Type: "json_object"})
+		require.NoError(t, err)
 		require.Equal(t, "application/json", cfg.ResponseMIMEType)
 	})
 
-	t.Run("text does not set mime type", func(t *testing.T) {
+	t.Run("unsupported text returns error", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyResponseFormat(cfg, &providers.ResponseFormat{Type: "text"})
+		err := applyResponseFormat(cfg, &providers.ResponseFormat{Type: "text"})
+		require.Error(t, err)
 		require.Empty(t, cfg.ResponseMIMEType)
 	})
 
@@ -1398,13 +1814,14 @@ func TestApplyResponseFormat(t *testing.T) {
 			},
 		}
 		cfg := &genai.GenerateContentConfig{}
-		applyResponseFormat(cfg, &providers.ResponseFormat{
+		err := applyResponseFormat(cfg, &providers.ResponseFormat{
 			Type: "json_schema",
 			JSONSchema: &providers.JSONSchema{
 				Name:   "test_schema",
 				Schema: schema,
 			},
 		})
+		require.NoError(t, err)
 		require.Equal(t, "application/json", cfg.ResponseMIMEType)
 		require.Equal(t, schema, cfg.ResponseJsonSchema)
 	})
@@ -1413,7 +1830,8 @@ func TestApplyResponseFormat(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyResponseFormat(cfg, &providers.ResponseFormat{Type: "json_schema"})
+		err := applyResponseFormat(cfg, &providers.ResponseFormat{Type: "json_schema"})
+		require.Error(t, err)
 		require.Empty(t, cfg.ResponseMIMEType)
 		require.Nil(t, cfg.ResponseJsonSchema)
 	})
@@ -1422,13 +1840,278 @@ func TestApplyResponseFormat(t *testing.T) {
 		t.Parallel()
 
 		cfg := &genai.GenerateContentConfig{}
-		applyResponseFormat(cfg, &providers.ResponseFormat{
+		err := applyResponseFormat(cfg, &providers.ResponseFormat{
 			Type:       "json_schema",
 			JSONSchema: &providers.JSONSchema{Name: "test"},
 		})
+		require.Error(t, err)
 		require.Empty(t, cfg.ResponseMIMEType)
 		require.Nil(t, cfg.ResponseJsonSchema)
 	})
+}
+
+func TestTextThoughtSignatureRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	response := &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+		Content: &genai.Content{Parts: []*genai.Part{{Text: "answer", ThoughtSignature: []byte("text-signature")}}},
+	}}}
+	completion, err := convertResponse(response, "gemini-2.5-pro")
+	require.NoError(t, err)
+
+	encoded, err := json.Marshal(completion.Choices[0].Message)
+	require.NoError(t, err)
+	var restored providers.Message
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	converted, err := convertAssistantMessage(restored)
+	require.NoError(t, err)
+	require.Equal(t, []byte("text-signature"), converted.Parts[0].ThoughtSignature)
+}
+
+func TestEmptySignedPartsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	response := &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+		Content: &genai.Content{Parts: []*genai.Part{
+			{Text: "", ThoughtSignature: []byte("text-signature")},
+			{Text: "", Thought: true, ThoughtSignature: []byte("thought-signature")},
+		}},
+	}}}
+	completion, err := convertResponse(response, "gemini-2.5-pro")
+	require.NoError(t, err)
+	require.NotNil(t, completion.Choices[0].Message.Reasoning)
+	require.Equal(t, "", completion.Choices[0].Message.Reasoning.Content)
+
+	encoded, err := json.Marshal(completion.Choices[0].Message)
+	require.NoError(t, err)
+	var restored providers.Message
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	replayed, err := convertAssistantMessage(restored)
+	require.NoError(t, err)
+	require.Len(t, replayed.Parts, 2)
+	require.Equal(t, []byte("text-signature"), replayed.Parts[0].ThoughtSignature)
+	require.False(t, replayed.Parts[0].Thought)
+	require.Equal(t, []byte("thought-signature"), replayed.Parts[1].ThoughtSignature)
+	require.True(t, replayed.Parts[1].Thought)
+}
+
+func TestResponsePreservesExactGeminiMetadataBody(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"candidates":[{"content":{"parts":[{"text":"answer"}]},` +
+		`"citationMetadata":{"citations":[]},"tokenCount":0,` +
+		`"safetyRatings":[{"blocked":false,"probabilityScore":0}]}],` +
+		`"usageMetadata":{"promptTokenCount":0,"totalTokenCount":0}}`
+	response := &genai.GenerateContentResponse{
+		SDKHTTPResponse: &genai.HTTPResponse{Body: body},
+		Candidates: []*genai.Candidate{{
+			Content: &genai.Content{Parts: []*genai.Part{{Text: "answer"}}},
+		}},
+	}
+
+	completion, err := convertResponse(response, "gemini-2.5-pro")
+	require.NoError(t, err)
+	raw, ok := completion.Choices[0].Message.Extra[providerName][extraKeyResponse].(json.RawMessage)
+	require.True(t, ok)
+	require.JSONEq(t, body, string(raw))
+
+	encoded, err := json.Marshal(completion.Choices[0].Message)
+	require.NoError(t, err)
+	var restored providers.Message
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	metadata, ok := restored.Extra[providerName][extraKeyResponse].(map[string]any)
+	require.True(t, ok)
+	candidates, ok := metadata["candidates"].([]any)
+	require.True(t, ok)
+	candidate, ok := candidates[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, float64(0), candidate["tokenCount"])
+	ratings, ok := candidate["safetyRatings"].([]any)
+	require.True(t, ok)
+	rating, ok := ratings[0].(map[string]any)
+	require.True(t, ok)
+	blocked, ok := rating["blocked"].(bool)
+	require.True(t, ok)
+	require.False(t, blocked)
+}
+
+func TestResponsePreservesExplicitZeroTotalTokenCount(t *testing.T) {
+	t.Parallel()
+
+	response := &genai.GenerateContentResponse{
+		SDKHTTPResponse: &genai.HTTPResponse{
+			Body: `{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":0}}`,
+		},
+		UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     2,
+			CandidatesTokenCount: 3,
+			TotalTokenCount:      0,
+		},
+	}
+
+	completion, err := convertResponse(response, "gemini-2.5-pro")
+	require.NoError(t, err)
+	require.Zero(t, completion.Usage.TotalTokens)
+}
+
+func TestCodeExecutionPartsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	response := &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+		Content: &genai.Content{Parts: []*genai.Part{
+			{Text: "I will calculate it."},
+			{ExecutableCode: &genai.ExecutableCode{Code: "print(6 * 7)", Language: genai.LanguagePython, ID: "code-1"}},
+			{CodeExecutionResult: &genai.CodeExecutionResult{Outcome: genai.OutcomeOK, Output: "42\n", ID: "code-1"}},
+			{Text: "The result is 42."},
+		}},
+	}}}
+	completion, err := convertResponse(response, "gemini-2.5-pro")
+	require.NoError(t, err)
+	require.Equal(t, "I will calculate it.The result is 42.", completion.Choices[0].Message.Content)
+
+	encoded, err := json.Marshal(completion.Choices[0].Message)
+	require.NoError(t, err)
+	var restored providers.Message
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	replayed, err := convertAssistantMessage(restored)
+	require.NoError(t, err)
+	require.Len(t, replayed.Parts, 4)
+	require.Equal(t, "print(6 * 7)", replayed.Parts[1].ExecutableCode.Code)
+	require.Equal(t, genai.LanguagePython, replayed.Parts[1].ExecutableCode.Language)
+	require.Equal(t, "42\n", replayed.Parts[2].CodeExecutionResult.Output)
+	require.Equal(t, genai.OutcomeOK, replayed.Parts[2].CodeExecutionResult.Outcome)
+}
+
+func TestResponsePartsReplayRejectsConflictingNormalizedContent(t *testing.T) {
+	t.Parallel()
+
+	response := &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+		Content: &genai.Content{Parts: []*genai.Part{
+			{ExecutableCode: &genai.ExecutableCode{Language: genai.LanguagePython, Code: "print('ok')"}},
+			{Text: "original"},
+		}},
+	}}}
+	completion, err := convertResponse(response, "gemini-2.5-pro")
+	require.NoError(t, err)
+	message := completion.Choices[0].Message
+	message.Content = "edited"
+
+	_, err = convertAssistantMessage(message)
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+}
+
+func TestStreamCodeExecutionPartsAppearInDeltasAndFinalReplayMetadata(t *testing.T) {
+	t.Parallel()
+
+	state, err := newStreamState("gemini-2.5-pro")
+	require.NoError(t, err)
+	textChunks, err := state.processResponse(&genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+		Content: &genai.Content{Parts: []*genai.Part{{Text: "Calculating."}}},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, textChunks, 1)
+	response := &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+		Content: &genai.Content{Parts: []*genai.Part{
+			{ExecutableCode: &genai.ExecutableCode{Code: "print(42)", Language: genai.LanguagePython}},
+			{CodeExecutionResult: &genai.CodeExecutionResult{Outcome: genai.OutcomeOK, Output: "42\n"}},
+		}},
+	}}}
+
+	chunks, err := state.processResponse(response)
+	require.NoError(t, err)
+	require.Len(t, chunks, 2)
+	for _, chunk := range chunks {
+		require.NotNil(t, chunk.Choices[0].Delta.Extra[providerName][extraKeyResponseParts])
+	}
+
+	final := state.finalChunk()
+	replayed, ok, err := responsePartsFromExtra(final.Choices[0].Delta.Extra)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, replayed, 3)
+	require.Equal(t, "Calculating.", replayed[0].Text)
+	require.Equal(t, "print(42)", replayed[1].ExecutableCode.Code)
+	require.Equal(t, "42\n", replayed[2].CodeExecutionResult.Output)
+}
+
+func TestStreamTextThoughtSignatureIsImmutableAndRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	state, err := newStreamState("gemini-2.5-pro")
+	require.NoError(t, err)
+	signature := []byte("stream-signature")
+	response := &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+		Content: &genai.Content{Parts: []*genai.Part{{Text: "answer", ThoughtSignature: signature}}},
+	}}}
+	chunks, err := state.processResponse(response)
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	signature[0] = 'X'
+
+	encoded, err := json.Marshal(chunks[0].Choices[0].Delta)
+	require.NoError(t, err)
+	var restored providers.ChunkDelta
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	value := restored.Extra[providerName][extraKeyThoughtSignature]
+	encodedSignature, ok := value.(string)
+	require.True(t, ok)
+	decoded, err := base64.StdEncoding.DecodeString(encodedSignature)
+	require.NoError(t, err)
+	require.Equal(t, []byte("stream-signature"), decoded)
+}
+
+func TestStreamPreservesResponseEventsAndEmptySignedParts(t *testing.T) {
+	t.Parallel()
+
+	state, err := newStreamState("gemini-2.5-pro")
+	require.NoError(t, err)
+	const body = `{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"c2ln"}]},` +
+		`"tokenCount":0}]}`
+	response := &genai.GenerateContentResponse{
+		SDKHTTPResponse: &genai.HTTPResponse{Body: body},
+		Candidates: []*genai.Candidate{{
+			Content: &genai.Content{Parts: []*genai.Part{{Text: "", ThoughtSignature: []byte("sig")}}},
+		}},
+	}
+
+	chunks, err := state.processResponse(response)
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+
+	final := state.finalChunk()
+	events, ok := final.Choices[0].Delta.Extra[providerName][extraKeyResponseEvents].([]json.RawMessage)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.JSONEq(t, body, string(events[0]))
+	replayed, ok, err := responsePartsFromExtra(final.Choices[0].Delta.Extra)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, []byte("sig"), replayed[0].ThoughtSignature)
+}
+
+func TestSendStreamChunk(t *testing.T) {
+	t.Parallel()
+
+	chunks := make(chan providers.ChatCompletionChunk, 1)
+	errs := make(chan error, 1)
+	want := providers.ChatCompletionChunk{ID: "chunk-1"}
+
+	require.True(t, sendStreamChunk(t.Context(), chunks, errs, want))
+	require.Equal(t, want, <-chunks)
+	require.Empty(t, errs)
+}
+
+func TestSendStreamChunkReportsCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	chunks := make(chan providers.ChatCompletionChunk)
+	errs := make(chan error, 1)
+
+	require.False(t, sendStreamChunk(ctx, chunks, errs, providers.ChatCompletionChunk{}))
+	require.ErrorIs(t, <-errs, context.Canceled)
+	require.Empty(t, chunks)
 }
 
 // Integration tests - only run if API key is available.
