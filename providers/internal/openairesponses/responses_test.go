@@ -20,9 +20,10 @@ const (
 func TestConvertParams(t *testing.T) {
 	t.Parallel()
 
+	instructions := "you are a shell assistant"
 	params := providers.ResponsesParams{
 		Model:        testModel,
-		Instructions: "you are a shell assistant",
+		Instructions: &instructions,
 		Input: []providers.ResponsesInputItem{
 			{Role: providers.RoleUser, Content: "list files"},
 			{Role: providers.RoleAssistant, Content: "=ls"},
@@ -34,6 +35,34 @@ func TestConvertParams(t *testing.T) {
 	require.Equal(t, testModel, req.Model)
 	require.Equal(t, "you are a shell assistant", req.Instructions.Value)
 	require.Len(t, req.Input.OfInputItemList, 2)
+}
+
+func TestConvertParamsPreservesExplicitEmptyInstructions(t *testing.T) {
+	t.Parallel()
+
+	empty := ""
+	params := providers.ResponsesParams{
+		Model:        testModel,
+		Instructions: &empty,
+		Input:        []providers.ResponsesInputItem{{Role: providers.RoleUser, Content: testInput}},
+	}
+
+	req, err := convertParams(testProviderName, params)
+	require.NoError(t, err)
+	wire, err := json.Marshal(req)
+	require.NoError(t, err)
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.JSONEq(t, `""`, string(body["instructions"]))
+
+	params.Instructions = nil
+	req, err = convertParams(testProviderName, params)
+	require.NoError(t, err)
+	wire, err = json.Marshal(req)
+	require.NoError(t, err)
+	body = nil
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.NotContains(t, body, "instructions")
 }
 
 func TestConvertParamsPreservesDeveloperRole(t *testing.T) {

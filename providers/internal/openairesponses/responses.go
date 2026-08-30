@@ -139,8 +139,8 @@ func convertParams(providerName string, params providers.ResponsesParams) (respo
 		},
 	}
 
-	if params.Instructions != "" {
-		req.Instructions = openai.String(params.Instructions)
+	if params.Instructions != nil {
+		req.Instructions = openai.String(*params.Instructions)
 	}
 
 	if params.MaxTokens != nil {

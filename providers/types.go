@@ -290,7 +290,7 @@ type ResponsesInputItem struct {
 // ResponsesParams represents normalized parameters for the OpenAI Responses API.
 type ResponsesParams struct {
 	Input        []ResponsesInputItem `json:"input"`
-	Instructions string               `json:"instructions,omitempty"`
+	Instructions *string              `json:"instructions,omitempty"`
 	MaxTokens    *int                 `json:"max_output_tokens,omitempty"`
 	Model        string               `json:"model"`
 	Reasoning    ReasoningEffort      `json:"reasoning_effort,omitempty"`

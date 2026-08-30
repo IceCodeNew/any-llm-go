@@ -489,9 +489,10 @@ func TestNormalizedResponsesWireFormat(t *testing.T) {
 	require.NoError(t, err)
 
 	maxTokens := 123
+	instructions := "be brief"
 	result, err := provider.Responses(t.Context(), providers.ResponsesParams{
 		Model:        "deployment",
-		Instructions: "be brief",
+		Instructions: &instructions,
 		Input:        []providers.ResponsesInputItem{{Role: providers.RoleUser, Content: "hello"}},
 		MaxTokens:    &maxTokens,
 		Reasoning:    providers.ReasoningEffortMedium,
