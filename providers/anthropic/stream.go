@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"maps"
 	"strings"
 
@@ -23,6 +24,10 @@ type streamState struct {
 	cacheReadUsage     int64
 	thinkingBlocks     []providers.ProviderData
 	currentThinkingIdx int
+	responseBlocks     map[int]providers.ProviderData
+	responseBlockOrder []int
+	responseInputJSON  map[int]string
+	preserveResponses  bool
 }
 
 // newStreamState creates a new stream state with default values.
@@ -30,6 +35,8 @@ func newStreamState() *streamState {
 	return &streamState{
 		currentToolIdx:     -1,
 		currentThinkingIdx: -1,
+		responseBlocks:     make(map[int]providers.ProviderData),
+		responseInputJSON:  make(map[int]string),
 	}
 }
 
@@ -50,28 +57,39 @@ func (s *streamState) chunk(delta providers.ChunkDelta) providers.ChatCompletion
 func (s *streamState) handleContentBlockDelta(event anthropic.ContentBlockDeltaEvent) *providers.ChatCompletionChunk {
 	switch event.Delta.Type {
 	case deltaTypeText:
+		s.appendResponseBlockString(event.Index, "text", event.Delta.Text)
 		return s.handleTextDelta(event.Delta.Text)
 	case deltaTypeThinking:
+		s.appendResponseBlockString(event.Index, "thinking", event.Delta.Thinking)
 		return s.handleThinkingDelta(event.Delta.Thinking)
 	case deltaTypeSignature:
+		s.appendResponseBlockString(event.Index, "signature", event.Delta.Signature)
 		if s.currentThinkingIdx >= 0 {
 			previous, _ := s.thinkingBlocks[s.currentThinkingIdx]["signature"].(string)
 			s.thinkingBlocks[s.currentThinkingIdx]["signature"] = previous + event.Delta.Signature
 		}
-		chunk := s.chunk(providers.ChunkDelta{Extra: s.thinkingExtra()})
+		chunk := s.chunk(providers.ChunkDelta{Extra: mergeExtras(s.thinkingExtra(), s.responseExtra())})
 		return &chunk
 	case deltaTypeInputJSON:
+		index := int(event.Index)
+		s.responseInputJSON[index] += event.Delta.PartialJSON
+		s.updateResponseBlockInput(event.Index)
+		if block := s.responseBlocks[index]; block != nil && block["type"] != blockTypeToolUse {
+			chunk := s.chunk(providers.ChunkDelta{Extra: s.responseExtra()})
+			return &chunk
+		}
 		return s.handleInputJSONDelta(event.Delta.PartialJSON)
 	case deltaTypeCitations:
+		s.appendResponseBlockValue(event.Index, "citations", event.Delta.Citation)
 		// Anthropic sends citations as first-class content deltas. Keep the SDK
 		// union in provider metadata so every documented citation variant survives.
 		// https://docs.anthropic.com/en/docs/build-with-claude/citations
-		chunk := s.chunk(providers.ChunkDelta{Extra: map[string]providers.ProviderData{
+		chunk := s.chunk(providers.ChunkDelta{Extra: mergeExtras(map[string]providers.ProviderData{
 			providerName: {
 				"citations": []any{event.Delta.Citation},
 				"index":     event.Index,
 			},
-		}})
+		}, s.responseExtra())})
 
 		return &chunk
 	default:
@@ -81,6 +99,7 @@ func (s *streamState) handleContentBlockDelta(event anthropic.ContentBlockDeltaE
 
 // handleContentBlockStart processes a content_block_start event.
 func (s *streamState) handleContentBlockStart(event anthropic.ContentBlockStartEvent) *providers.ChatCompletionChunk {
+	s.recordResponseBlock(event.Index, event.ContentBlock)
 	switch event.ContentBlock.Type {
 	case blockTypeThinking:
 		s.thinkingBlocks = append(s.thinkingBlocks, providers.ProviderData{
@@ -109,8 +128,80 @@ func (s *streamState) handleContentBlockStart(event anthropic.ContentBlockStartE
 		chunk := s.chunk(providers.ChunkDelta{ToolCalls: []providers.ToolCall{tc}})
 
 		return &chunk
+	default:
+		chunk := s.chunk(providers.ChunkDelta{Extra: s.responseExtra()})
+		return &chunk
 	}
 	return nil
+}
+
+func (s *streamState) recordResponseBlock(
+	index int64,
+	block anthropic.ContentBlockStartEventContentBlockUnion,
+) {
+	raw := []byte(block.RawJSON())
+	if len(raw) == 0 {
+		var rawValue any = block.AsAny()
+		encoded, err := json.Marshal(rawValue)
+		if err != nil {
+			return
+		}
+		raw = encoded
+	}
+	var data providers.ProviderData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return
+	}
+	blockIndex := int(index)
+	if _, exists := s.responseBlocks[blockIndex]; !exists {
+		s.responseBlockOrder = append(s.responseBlockOrder, blockIndex)
+	}
+	s.responseBlocks[blockIndex] = data
+	if !normalizedResponseBlockType(block.Type) {
+		s.preserveResponses = true
+	}
+}
+
+func normalizedResponseBlockType(blockType string) bool {
+	switch blockType {
+	case blockTypeText, blockTypeThinking, blockTypeRedactedThinking, blockTypeToolUse:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *streamState) appendResponseBlockString(index int64, key, delta string) {
+	block := s.responseBlocks[int(index)]
+	if block == nil {
+		return
+	}
+	previous, _ := block[key].(string)
+	block[key] = previous + delta
+}
+
+func (s *streamState) appendResponseBlockValue(index int64, key string, value any) {
+	block := s.responseBlocks[int(index)]
+	if block == nil {
+		return
+	}
+	values, _ := block[key].([]any)
+	block[key] = append(values, value)
+}
+
+func (s *streamState) updateResponseBlockInput(index int64) {
+	block := s.responseBlocks[int(index)]
+	if block == nil {
+		return
+	}
+	partial := s.responseInputJSON[int(index)]
+	var input any
+	if err := json.Unmarshal([]byte(partial), &input); err != nil {
+		block["input_json_delta"] = partial
+		return
+	}
+	delete(block, "input_json_delta")
+	block["input"] = input
 }
 
 // handleInputJSONDelta processes a tool input JSON delta and returns a chunk if applicable.
@@ -140,7 +231,7 @@ func (s *streamState) handleMessageDelta(event anthropic.MessageDeltaEvent) prov
 		s.cacheReadUsage = event.Usage.CacheReadInputTokens
 	}
 	finishReason := convertStopReason(string(event.Delta.StopReason))
-	delta := providers.ChunkDelta{Extra: refusalExtra(event.Delta.StopDetails)}
+	delta := providers.ChunkDelta{Extra: mergeExtras(refusalExtra(event.Delta.StopDetails), s.responseExtra())}
 	chunk := s.chunk(delta)
 	chunk.Choices[0].FinishReason = finishReason
 	chunk.Usage = &providers.Usage{
@@ -188,9 +279,40 @@ func (s *streamState) handleThinkingDelta(thinking string) *providers.ChatComple
 		s.thinkingBlocks[s.currentThinkingIdx]["thinking"] = previous + thinking
 	}
 	chunk := s.chunk(providers.ChunkDelta{
-		Reasoning: &providers.Reasoning{Content: thinking}, Extra: s.thinkingExtra(),
+		Reasoning: &providers.Reasoning{Content: thinking},
+		Extra:     mergeExtras(s.thinkingExtra(), s.responseExtra()),
 	})
 	return &chunk
+}
+
+func (s *streamState) responseExtra() map[string]providers.ProviderData {
+	if !s.preserveResponses {
+		return nil
+	}
+	blocks := make([]providers.ProviderData, 0, len(s.responseBlockOrder))
+	for _, index := range s.responseBlockOrder {
+		block := s.responseBlocks[index]
+		copy := make(providers.ProviderData, len(block))
+		maps.Copy(copy, block)
+		blocks = append(blocks, copy)
+	}
+	return map[string]providers.ProviderData{providerName: {"response_blocks": blocks}}
+}
+
+func mergeExtras(extras ...map[string]providers.ProviderData) map[string]providers.ProviderData {
+	var result map[string]providers.ProviderData
+	for _, extra := range extras {
+		for provider, data := range extra {
+			if result == nil {
+				result = make(map[string]providers.ProviderData)
+			}
+			if result[provider] == nil {
+				result[provider] = make(providers.ProviderData)
+			}
+			maps.Copy(result[provider], data)
+		}
+	}
+	return result
 }
 
 func (s *streamState) thinkingExtra() map[string]providers.ProviderData {
@@ -205,6 +327,6 @@ func (s *streamState) thinkingExtra() map[string]providers.ProviderData {
 // handleTextDelta processes a text delta and returns a chunk.
 func (s *streamState) handleTextDelta(text string) *providers.ChatCompletionChunk {
 	s.content.WriteString(text)
-	chunk := s.chunk(providers.ChunkDelta{Content: text})
+	chunk := s.chunk(providers.ChunkDelta{Content: text, Extra: s.responseExtra()})
 	return &chunk
 }

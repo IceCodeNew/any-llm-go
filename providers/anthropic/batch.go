@@ -201,7 +201,11 @@ func (p *Provider) RetrieveBatchResults(
 	}()
 	result := &providers.BatchResult{}
 	for stream.Next() {
-		result.Results = append(result.Results, convertBatchResultItem(stream.Current()))
+		item, err := convertBatchResultItem(stream.Current())
+		if err != nil {
+			return nil, err
+		}
+		result.Results = append(result.Results, item)
 	}
 	if err := stream.Err(); err != nil {
 		return nil, p.ConvertError(err)
@@ -214,11 +218,15 @@ func isTerminalBatchStatus(status providers.BatchStatus) bool {
 		status == providers.BatchStatusCancelled || status == providers.BatchStatusExpired
 }
 
-func convertBatchResultItem(entry anthropic.MessageBatchIndividualResponse) providers.BatchResultItem {
+func convertBatchResultItem(entry anthropic.MessageBatchIndividualResponse) (providers.BatchResultItem, error) {
 	item := providers.BatchResultItem{CustomID: entry.CustomID}
 	switch entry.Result.Type {
 	case "succeeded":
-		item.Result = convertResponse(&entry.Result.Message)
+		result, err := convertResponse(&entry.Result.Message)
+		if err != nil {
+			return providers.BatchResultItem{}, err
+		}
+		item.Result = result
 	case "errored":
 		item.Error = &providers.BatchResultError{
 			Code:    entry.Result.Error.Error.Type,
@@ -229,7 +237,7 @@ func convertBatchResultItem(entry anthropic.MessageBatchIndividualResponse) prov
 	default:
 		item.Error = &providers.BatchResultError{Code: "unknown", Message: "Unknown batch result"}
 	}
-	return item
+	return item, nil
 }
 
 func cloneMap(source map[string]any) map[string]any {

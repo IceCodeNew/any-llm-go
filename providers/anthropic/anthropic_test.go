@@ -332,6 +332,36 @@ func TestStreamStateHandleToolUseStart(t *testing.T) {
 	require.Equal(t, []providers.ToolCall{expected}, chunk.Choices[0].Delta.ToolCalls)
 }
 
+func TestStreamStatePreservesServerToolInputForReplay(t *testing.T) {
+	t.Parallel()
+
+	state := newStreamState()
+	var start anthropic.ContentBlockStartEvent
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"type":"content_block_start","index":0,
+		"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}
+	}`), &start))
+	startChunk := state.handleContentBlockStart(start)
+	require.NotNil(t, startChunk)
+	require.NotNil(t, startChunk.Choices[0].Delta.Extra[providerName]["response_blocks"])
+
+	var delta anthropic.ContentBlockDeltaEvent
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"type":"content_block_delta","index":0,
+		"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"any-llm\"}"}
+	}`), &delta))
+	inputChunk := state.handleContentBlockDelta(delta)
+	require.NotNil(t, inputChunk)
+
+	message := providers.Message{Role: providers.RoleAssistant, Extra: inputChunk.Choices[0].Delta.Extra}
+	replayed, err := convertAssistantMessage(message)
+	require.NoError(t, err)
+	wire, err := json.Marshal(replayed)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"type":"server_tool_use"`)
+	require.Contains(t, string(wire), `"query":"any-llm"`)
+}
+
 func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 	t.Parallel()
 
@@ -1632,7 +1662,8 @@ func TestConvertResponsePreservesThinkingSignature(t *testing.T) {
 		Usage:      anthropic.Usage{InputTokens: 10, OutputTokens: 20},
 	}
 
-	result := convertResponse(resp)
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.Choices[0].Message.Reasoning)
 	require.Equal(t, "Let me think...", result.Choices[0].Message.Reasoning.Content)
@@ -1659,7 +1690,8 @@ func TestConvertResponsePreservesTextCitations(t *testing.T) {
 		}},
 	}
 
-	result := convertResponse(resp)
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
 	data := result.Choices[0].Message.Extra[providerName]
 	citations, ok := data["citations"].([]any)
 	require.True(t, ok)
@@ -1670,6 +1702,43 @@ func TestConvertResponsePreservesTextCitations(t *testing.T) {
 	require.Equal(t, "source text", citation.CitedText)
 	require.Equal(t, int64(1), citation.StartPageNumber)
 	require.Equal(t, int64(2), citation.EndPageNumber)
+}
+
+func TestConvertResponsePreservesAndReplaysServerToolBlocks(t *testing.T) {
+	t.Parallel()
+
+	var response anthropic.Message
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"id":"msg_server_tool","type":"message","role":"assistant","model":"claude-test",
+		"stop_reason":"end_turn","stop_sequence":null,
+		"content":[
+			{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"any-llm"}},
+			{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{
+				"type":"web_search_result","title":"any-llm","url":"https://example.test/any-llm",
+				"encrypted_content":"encrypted-result"
+			}]},
+			{"type":"text","text":"Here is the answer."}
+		],
+		"usage":{"input_tokens":3,"output_tokens":4}
+	}`), &response))
+
+	result, err := convertResponse(&response)
+	require.NoError(t, err)
+	message := result.Choices[0].Message
+	require.Equal(t, "Here is the answer.", message.Content)
+
+	encoded, err := json.Marshal(message)
+	require.NoError(t, err)
+	var restored providers.Message
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	replayed, err := convertAssistantMessage(restored)
+	require.NoError(t, err)
+	require.Len(t, replayed.Content, 3)
+
+	wire, err := json.Marshal(replayed)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"type":"server_tool_use"`)
+	require.Contains(t, string(wire), `"encrypted_content":"encrypted-result"`)
 }
 
 func TestConvertResponseAccumulatesThinkingBlocks(t *testing.T) {
@@ -1686,7 +1755,8 @@ func TestConvertResponseAccumulatesThinkingBlocks(t *testing.T) {
 		Usage:      anthropic.Usage{InputTokens: 5, OutputTokens: 10},
 	}
 
-	result := convertResponse(resp)
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
 	require.NotNil(t, result.Choices[0].Message.Reasoning)
 	require.Equal(t, "First thought. Second thought.", result.Choices[0].Message.Reasoning.Content)
 	// Last non-empty signature wins, matching Python extra_content overwrite.
@@ -1707,7 +1777,8 @@ func TestConvertResponsePreservesThinkingWithoutSignature(t *testing.T) {
 		Usage:      anthropic.Usage{InputTokens: 5, OutputTokens: 10},
 	}
 
-	result := convertResponse(resp)
+	result, err := convertResponse(resp)
+	require.NoError(t, err)
 	require.NotNil(t, result.Choices[0].Message.Reasoning)
 	require.Equal(t, "No signature here.", result.Choices[0].Message.Reasoning.Content)
 	require.Empty(t, result.Choices[0].Message.Reasoning.Signature)

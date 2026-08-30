@@ -69,6 +69,13 @@ func applyResponseFormat(req *anthropic.MessageNewParams, format *providers.Resp
 
 // convertAssistantMessage converts an assistant message to Anthropic format.
 func convertAssistantMessage(msg providers.Message) (*anthropic.MessageParam, error) {
+	if content, ok, err := convertResponseMetadata(msg.Extra); err != nil {
+		return nil, err
+	} else if ok {
+		message := anthropic.NewAssistantMessage(content...)
+		return &message, nil
+	}
+
 	thinking, replayedThinking, err := convertThinkingMetadata(msg.Extra)
 	if err != nil {
 		return nil, err
@@ -83,6 +90,28 @@ func convertAssistantMessage(msg providers.Message) (*anthropic.MessageParam, er
 	thinking = append(thinking, content...)
 	message := anthropic.NewAssistantMessage(thinking...)
 	return &message, nil
+}
+
+func convertResponseMetadata(
+	extra map[string]providers.ProviderData,
+) ([]anthropic.ContentBlockParamUnion, bool, error) {
+	data, exists := extra[providerName]
+	if !exists {
+		return nil, false, nil
+	}
+	raw, exists := data["response_blocks"]
+	if !exists {
+		return nil, false, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("serializing Anthropic response_blocks metadata: %w", err)
+	}
+	var blocks []anthropic.ContentBlockParamUnion
+	if err := json.Unmarshal(encoded, &blocks); err != nil {
+		return nil, false, fmt.Errorf("decoding Anthropic response_blocks metadata: %w", err)
+	}
+	return blocks, true, nil
 }
 
 func convertAssistantContent(msg providers.Message) ([]anthropic.ContentBlockParamUnion, error) {
@@ -216,15 +245,31 @@ func convertMessages(messages []providers.Message) ([]anthropic.MessageParam, []
 
 func convertResponseContent(
 	blocks []anthropic.ContentBlockUnion,
-) (string, *providers.Reasoning, []any, []providers.ToolCall, []any) {
+) (string, *providers.Reasoning, []any, []providers.ToolCall, []any, []json.RawMessage, error) {
 	var content strings.Builder
 	var reasoning *providers.Reasoning
 	thinkingBlocks := make([]any, 0)
 	var toolCalls []providers.ToolCall
 
 	var citations []any
+	rawBlocks := make([]json.RawMessage, 0, len(blocks))
+	preserveRawBlocks := false
 
 	for _, block := range blocks {
+		raw := json.RawMessage(block.RawJSON())
+		if len(raw) == 0 {
+			var rawValue any = block.AsAny()
+			if rawValue == nil {
+				rawValue = block
+			}
+			encoded, err := json.Marshal(rawValue)
+			if err != nil {
+				return "", nil, nil, nil, nil, nil, fmt.Errorf("serializing Anthropic response block: %w", err)
+			}
+			raw = encoded
+		}
+		rawBlocks = append(rawBlocks, raw)
+
 		switch block.Type {
 		case blockTypeText:
 			content.WriteString(block.Text)
@@ -241,10 +286,15 @@ func convertResponseContent(
 			)
 		case blockTypeToolUse:
 			toolCalls = append(toolCalls, responseToolCall(block))
+		default:
+			preserveRawBlocks = true
 		}
 	}
 
-	return content.String(), reasoning, thinkingBlocks, toolCalls, citations
+	if !preserveRawBlocks {
+		rawBlocks = nil
+	}
+	return content.String(), reasoning, thinkingBlocks, toolCalls, citations, rawBlocks, nil
 }
 
 func appendThinkingBlock(
@@ -284,8 +334,13 @@ func responseToolCall(block anthropic.ContentBlockUnion) providers.ToolCall {
 }
 
 // convertResponse converts an Anthropic response to providers format.
-func convertResponse(resp *anthropic.Message) *providers.ChatCompletion {
-	content, reasoning, thinkingBlocks, toolCalls, citations := convertResponseContent(resp.Content)
+func convertResponse(resp *anthropic.Message) (*providers.ChatCompletion, error) {
+	content, reasoning, thinkingBlocks, toolCalls, citations, responseBlocks, err := convertResponseContent(
+		resp.Content,
+	)
+	if err != nil {
+		return nil, err
+	}
 	message := providers.Message{
 		Role:      providers.RoleAssistant,
 		Content:   content,
@@ -293,7 +348,7 @@ func convertResponse(resp *anthropic.Message) *providers.ChatCompletion {
 		Reasoning: reasoning,
 	}
 
-	if len(thinkingBlocks) > 0 || len(citations) > 0 {
+	if len(thinkingBlocks) > 0 || len(citations) > 0 || len(responseBlocks) > 0 {
 		providerData := make(providers.ProviderData)
 		if len(thinkingBlocks) > 0 {
 			providerData["thinking_blocks"] = thinkingBlocks
@@ -303,6 +358,12 @@ func convertResponse(resp *anthropic.Message) *providers.ChatCompletion {
 			// Anthropic citations are an open union. Preserve the SDK values rather
 			// than narrowing them to today's variants.
 			providerData["citations"] = citations
+		}
+		if len(responseBlocks) > 0 {
+			// Anthropic requires server-tool blocks and encrypted results to be
+			// returned unchanged in subsequent turns.
+			// https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools
+			providerData["response_blocks"] = responseBlocks
 		}
 
 		message.Extra = map[string]providers.ProviderData{providerName: providerData}
@@ -347,7 +408,7 @@ func convertResponse(resp *anthropic.Message) *providers.ChatCompletion {
 					resp.Usage.CacheReadInputTokens + resp.Usage.OutputTokens,
 			),
 		},
-	}
+	}, nil
 }
 
 // convertStopReason converts Anthropic stop reason to OpenAI finish reason.

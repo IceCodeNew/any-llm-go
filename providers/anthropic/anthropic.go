@@ -158,7 +158,7 @@ func (p *Provider) Completion(
 		return nil, p.ConvertError(err)
 	}
 
-	return convertResponse(resp), nil
+	return convertResponse(resp)
 }
 
 // convertParams converts providers.CompletionParams to Anthropic request parameters.

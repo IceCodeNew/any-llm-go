@@ -47,11 +47,12 @@ func TestConvertContentRejectsInvalidPDFAndCache(t *testing.T) {
 func TestThinkingBlocksJSONRoundTripPreservesOrderAndOpaqueData(t *testing.T) {
 	t.Parallel()
 
-	response := convertResponse(&anthropic.Message{Content: []anthropic.ContentBlockUnion{
+	response, err := convertResponse(&anthropic.Message{Content: []anthropic.ContentBlockUnion{
 		{Type: blockTypeThinking, Thinking: "first", Signature: "sig-1"},
 		{Type: blockTypeRedactedThinking, Data: "opaque-secret"},
 		{Type: blockTypeThinking, Thinking: "second", Signature: "sig-2"},
 	}})
+	require.NoError(t, err)
 	message := response.Choices[0].Message
 	require.Equal(t, "firstsecond", message.Reasoning.Content)
 
@@ -173,7 +174,8 @@ func TestConvertResponsePreservesRefusalAndReasoningUsage(t *testing.T) {
 		"usage":{"input_tokens":2,"output_tokens":7,"cache_creation_input_tokens":3,
 			"cache_read_input_tokens":5,"output_tokens_details":{"thinking_tokens":4}}
 	}`), &message))
-	response := convertResponse(&message)
+	response, err := convertResponse(&message)
+	require.NoError(t, err)
 	require.Equal(t, providers.FinishReasonContentFilter, response.Choices[0].FinishReason)
 	require.Equal(t, 4, response.Usage.ReasoningTokens)
 	require.Equal(t, 10, response.Usage.PromptTokens)
