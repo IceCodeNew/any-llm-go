@@ -188,8 +188,7 @@ type CacheControl struct {
 	Type string `json:"type"`
 }
 
-// File represents file content in a multipart message. FileData accepts an HTTPS
-// URL or a base64 data URL.
+// File identifies provider-supported inline or remote file content.
 type File struct {
 	FileData string `json:"file_data"`
 }

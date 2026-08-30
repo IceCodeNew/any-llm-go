@@ -52,10 +52,15 @@ and Message Batches. A PDF `file` content part accepts an absolute HTTPS URL or
 TTL buckets are included in `Usage`.
 
 Signed thinking and opaque redacted-thinking blocks are retained in order in
-`Message.Extra["anthropic"]["thinking_blocks"]` (serialized as `extra_content`). Preserve this JSON
-serializable metadata when replaying assistant messages. For official SDK request
-types, use `provider.Messages` and `provider.MessagesStreaming`, or their beta
-counterparts `provider.BetaMessages` and `provider.BetaMessagesStreaming`.
+`Message.Extra["anthropic"]["thinking_blocks"]` (serialized as `extra_content`).
+Responses with server-tool blocks also retain the complete block sequence in
+`Message.Extra["anthropic"]["response_blocks"]`. Preserve this JSON-serializable
+metadata when replaying assistant messages. The stored response blocks are
+authoritative; remove `response_blocks` before editing normalized content,
+reasoning, or tool calls. For official SDK request types, use `provider.Messages`
+and `provider.MessagesStreaming`, or their beta counterparts
+`provider.BetaMessages` and `provider.BetaMessagesStreaming`.
+
 Anthropic also implements `anyllm.BatchProvider`.
 
 **Popular Models:**
