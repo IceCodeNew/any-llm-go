@@ -16,11 +16,14 @@ const (
 
 // Reasoning effort levels for extended thinking.
 const (
-	ReasoningEffortAuto   ReasoningEffort = "auto"
-	ReasoningEffortHigh   ReasoningEffort = "high"
-	ReasoningEffortLow    ReasoningEffort = "low"
-	ReasoningEffortMedium ReasoningEffort = "medium"
-	ReasoningEffortNone   ReasoningEffort = "none"
+	ReasoningEffortAuto    ReasoningEffort = "auto"
+	ReasoningEffortHigh    ReasoningEffort = "high"
+	ReasoningEffortLow     ReasoningEffort = "low"
+	ReasoningEffortMax     ReasoningEffort = "max"
+	ReasoningEffortMedium  ReasoningEffort = "medium"
+	ReasoningEffortMinimal ReasoningEffort = "minimal"
+	ReasoningEffortNone    ReasoningEffort = "none"
+	ReasoningEffortXHigh   ReasoningEffort = "xhigh"
 )
 
 // Message roles.
@@ -91,11 +94,12 @@ type ReasoningEffort string
 
 // Capabilities describes what features a provider supports.
 type Capabilities struct {
+	Batch               bool
 	Completion          bool
 	CompletionImage     bool
 	CompletionPDF       bool
 	CompletionReasoning bool
-	CompletionStreaming  bool
+	CompletionStreaming bool
 	CompletionTools     bool
 	Embedding           bool
 	ListModels          bool
@@ -141,16 +145,19 @@ type ChunkChoice struct {
 
 // ChunkDelta represents the delta content in a streaming chunk.
 type ChunkDelta struct {
-	Role      string     `json:"role,omitempty"`
-	Content   string     `json:"content,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	Reasoning *Reasoning `json:"reasoning,omitempty"`
+	Role      string                  `json:"role,omitempty"`
+	Content   string                  `json:"content,omitempty"`
+	ToolCalls []ToolCall              `json:"tool_calls,omitempty"`
+	Reasoning *Reasoning              `json:"reasoning,omitempty"`
+	Extra     map[string]ProviderData `json:"extra_content,omitempty"`
 }
 
 // CompletionParams represents normalized parameters for chat completion requests.
 type CompletionParams struct {
 	Model             string          `json:"model"`
 	Messages          []Message       `json:"messages"`
+	FrequencyPenalty  *float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty   *float64        `json:"presence_penalty,omitempty"`
 	Temperature       *float64        `json:"temperature,omitempty"`
 	TopP              *float64        `json:"top_p,omitempty"`
 	MaxTokens         *int            `json:"max_tokens,omitempty"`
@@ -163,6 +170,7 @@ type CompletionParams struct {
 	ResponseFormat    *ResponseFormat `json:"response_format,omitempty"`
 	ReasoningEffort   ReasoningEffort `json:"reasoning_effort,omitempty"`
 	Seed              *int            `json:"seed,omitempty"`
+	ServiceTier       string          `json:"service_tier,omitempty"`
 	User              string          `json:"user,omitempty"`
 	Extra             map[string]any  `json:"-"`
 }
@@ -172,6 +180,12 @@ type ContentPart struct {
 	Type     string    `json:"type"`
 	Text     string    `json:"text,omitempty"`
 	ImageURL *ImageURL `json:"image_url,omitempty"`
+	File     *File     `json:"file,omitempty"`
+}
+
+// File identifies provider-supported inline or remote file content.
+type File struct {
+	FileData string `json:"file_data"`
 }
 
 // EmbeddingData represents a single embedding.
@@ -295,12 +309,13 @@ type JSONSchema struct {
 
 // Message represents a chat message in OpenAI format.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content"`
-	Name       string     `json:"name,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Reasoning  *Reasoning `json:"reasoning,omitempty"`
+	Role       string                  `json:"role"`
+	Content    any                     `json:"content"`
+	Name       string                  `json:"name,omitempty"`
+	ToolCalls  []ToolCall              `json:"tool_calls,omitempty"`
+	ToolCallID string                  `json:"tool_call_id,omitempty"`
+	Reasoning  *Reasoning              `json:"reasoning,omitempty"`
+	Extra      map[string]ProviderData `json:"extra_content,omitempty"`
 }
 
 // Model represents a model from the list models API.
@@ -343,8 +358,7 @@ type Tool struct {
 type ToolCall struct {
 	// Extra holds provider-specific metadata for round-tripping across
 	// multi-turn conversations. Keyed by provider name (e.g. "gemini").
-	// Excluded from JSON; callers preserve this through their own storage.
-	Extra    map[string]ProviderData `json:"-"`
+	Extra    map[string]ProviderData `json:"extra_content,omitempty"`
 	Function FunctionCall            `json:"function"`
 	ID       string                  `json:"id"`
 	Type     string                  `json:"type"`
@@ -367,6 +381,7 @@ type Usage struct {
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens,omitempty"`
 }
 
 // ContentParts extracts content parts from a message.
@@ -458,6 +473,7 @@ type BatchRequestItem struct {
 // CreateBatchParams are parameters for creating a batch job.
 type CreateBatchParams struct {
 	CompletionWindow string             `json:"completion_window,omitempty"`
+	Endpoint         string             `json:"endpoint,omitempty"`
 	Metadata         map[string]string  `json:"metadata,omitempty"`
 	Model            string             `json:"model"`
 	Requests         []BatchRequestItem `json:"requests"`
