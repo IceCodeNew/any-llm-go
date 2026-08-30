@@ -1758,6 +1758,35 @@ func TestConvertAssistantMessageReplaysThinkingBeforeToolCalls(t *testing.T) {
 	require.NotNil(t, result.Content[1].OfToolUse)
 }
 
+func TestConvertAssistantMessagePreservesMultimodalContentWithToolCalls(t *testing.T) {
+	t.Parallel()
+
+	msg := providers.Message{
+		Role: providers.RoleAssistant,
+		Content: []providers.ContentPart{
+			{Type: blockTypeText, Text: "I found this image."},
+			{Type: "image_url", ImageURL: &providers.ImageURL{URL: "https://example.com/result.png"}},
+		},
+		ToolCalls: []providers.ToolCall{
+			{
+				ID:       "call_1",
+				Type:     "function",
+				Function: providers.FunctionCall{Name: "inspect_image", Arguments: `{}`},
+			},
+		},
+		Reasoning: &providers.Reasoning{Content: "Need to inspect the image.", Signature: "sig_image"},
+	}
+
+	result, err := convertAssistantMessage(msg)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 4)
+	require.NotNil(t, result.Content[0].OfThinking)
+	require.Equal(t, "I found this image.", result.Content[1].OfText.Text)
+	require.Equal(t, "https://example.com/result.png", result.Content[2].OfImage.Source.OfURL.URL)
+	require.NotNil(t, result.Content[3].OfToolUse)
+}
+
 func TestConvertAssistantMessageOmitsThinkingWithoutReasoning(t *testing.T) {
 	t.Parallel()
 

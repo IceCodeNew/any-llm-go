@@ -90,7 +90,14 @@ func convertAssistantContent(msg providers.Message) ([]anthropic.ContentBlockPar
 		return convertContent(msg)
 	}
 	content := make([]anthropic.ContentBlockParamUnion, 0, len(msg.ToolCalls)+1)
-	if msg.ContentString() != "" {
+	if msg.IsMultiModal() {
+		blocks, err := convertContent(msg)
+		if err != nil {
+			return nil, err
+		}
+
+		content = append(content, blocks...)
+	} else if msg.ContentString() != "" {
 		content = append(content, anthropic.NewTextBlock(msg.ContentString()))
 	}
 	for _, tc := range msg.ToolCalls {
