@@ -159,12 +159,12 @@ type ChunkChoice struct {
 
 // ChunkDelta represents the delta content in a streaming chunk.
 type ChunkDelta struct {
+	Role      string     `json:"role,omitempty"`
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Reasoning *Reasoning `json:"reasoning,omitempty"`
 	// Extra holds provider-specific response metadata, keyed by provider name.
-	Extra     map[string]ProviderData `json:"extra_content,omitempty"`
-	Role      string                  `json:"role,omitempty"`
-	Content   string                  `json:"content,omitempty"`
-	ToolCalls []ToolCall              `json:"tool_calls,omitempty"`
-	Reasoning *Reasoning              `json:"reasoning,omitempty"`
+	Extra map[string]ProviderData `json:"extra_content,omitempty"`
 }
 
 // CompletionParams represents normalized parameters for chat completion requests.
@@ -177,6 +177,7 @@ type CompletionParams struct {
 	N                 *int            `json:"n,omitempty"`
 	PresencePenalty   *float64        `json:"presence_penalty,omitempty"`
 	Temperature       *float64        `json:"temperature,omitempty"`
+	TopK              *int            `json:"top_k,omitempty"`
 	TopP              *float64        `json:"top_p,omitempty"`
 	MaxTokens         *int            `json:"max_tokens,omitempty"`
 	Stop              []string        `json:"stop,omitempty"`
@@ -197,10 +198,17 @@ type CompletionParams struct {
 
 // ContentPart represents a part of a multi-modal message.
 type ContentPart struct {
-	Type     string    `json:"type"`
-	Text     string    `json:"text,omitempty"`
-	ImageURL *ImageURL `json:"image_url,omitempty"`
-	File     *File     `json:"file,omitempty"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	File         *File         `json:"file,omitempty"`
+	ImageURL     *ImageURL     `json:"image_url,omitempty"`
+	Text         string        `json:"text,omitempty"`
+	Type         string        `json:"type"`
+}
+
+// CacheControl marks content as an ephemeral Anthropic prompt-cache breakpoint.
+type CacheControl struct {
+	TTL  string `json:"ttl,omitempty"`
+	Type string `json:"type"`
 }
 
 // File identifies provider-supported inline or remote file content.
@@ -378,14 +386,14 @@ type JSONSchema struct {
 
 // Message represents a chat message in OpenAI format.
 type Message struct {
+	Content any `json:"content"`
 	// Extra holds provider-specific response metadata, keyed by provider name.
 	Extra      map[string]ProviderData `json:"extra_content,omitempty"`
-	Role       string                  `json:"role"`
-	Content    any                     `json:"content"`
 	Name       string                  `json:"name,omitempty"`
-	ToolCalls  []ToolCall              `json:"tool_calls,omitempty"`
-	ToolCallID string                  `json:"tool_call_id,omitempty"`
 	Reasoning  *Reasoning              `json:"reasoning,omitempty"`
+	Role       string                  `json:"role"`
+	ToolCallID string                  `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall              `json:"tool_calls,omitempty"`
 }
 
 // Model represents a model from the list models API.
@@ -404,7 +412,8 @@ type ModelsResponse struct {
 
 // Reasoning represents extended thinking/reasoning content.
 type Reasoning struct {
-	Content string `json:"content,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // ResponseFormat specifies the format of the response.
@@ -420,16 +429,16 @@ type StreamOptions struct {
 
 // Tool represents a tool/function that can be called.
 type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Type         string        `json:"type"`
+	Function     Function      `json:"function"`
 }
 
 // ToolCall represents a tool call made by the assistant.
 type ToolCall struct {
 	// Extra holds provider-specific metadata for round-tripping across
 	// multi-turn conversations. Keyed by provider name (e.g. "gemini").
-	// Excluded from JSON; callers preserve this through their own storage.
-	Extra    map[string]ProviderData `json:"-"`
+	Extra    map[string]ProviderData `json:"extra_content,omitempty"`
 	Function FunctionCall            `json:"function"`
 	ID       string                  `json:"id"`
 	Type     string                  `json:"type"`
@@ -448,10 +457,15 @@ type ToolChoiceFunction struct {
 
 // Usage represents token usage information.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	CacheCreationInputTokens            int `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreationInputTokensEphemeral1h int `json:"cache_creation_input_tokens_ephemeral_1h,omitempty"`
+	CacheCreationInputTokensEphemeral5m int `json:"cache_creation_input_tokens_ephemeral_5m,omitempty"`
+	CacheReadInputTokens                int `json:"cache_read_input_tokens,omitempty"`
+	CachedTokens                        int `json:"cached_tokens,omitempty"`
+	CompletionTokens                    int `json:"completion_tokens"`
+	PromptTokens                        int `json:"prompt_tokens"`
+	ReasoningTokens                     int `json:"reasoning_tokens,omitempty"`
+	TotalTokens                         int `json:"total_tokens"`
 }
 
 // ContentParts extracts content parts from a message.
