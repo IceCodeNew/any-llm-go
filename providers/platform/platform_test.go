@@ -2,9 +2,12 @@ package platform
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +18,39 @@ import (
 	"github.com/mozilla-ai/any-llm-go/providers"
 	"github.com/mozilla-ai/any-llm-go/sdk"
 )
+
+const validPlatformKey = "ANY.v1.12345678.abcdef01-YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY="
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+type streamingProviderStub struct {
+	completionStream func(
+		context.Context,
+		providers.CompletionParams,
+	) (<-chan providers.ChatCompletionChunk, <-chan error)
+}
+
+func (*streamingProviderStub) Name() string {
+	return "streaming-stub"
+}
+
+func (*streamingProviderStub) Completion(
+	context.Context,
+	providers.CompletionParams,
+) (*providers.ChatCompletion, error) {
+	return new(providers.ChatCompletion), nil
+}
+
+func (s *streamingProviderStub) CompletionStream(
+	ctx context.Context,
+	params providers.CompletionParams,
+) (<-chan providers.ChatCompletionChunk, <-chan error) {
+	return s.completionStream(ctx, params)
+}
 
 func TestNew(t *testing.T) {
 	t.Run("returns error when API key is missing", func(t *testing.T) {
@@ -172,6 +208,199 @@ func TestCompletionStreamDoesNotMutateParams(t *testing.T) {
 	require.Equal(t, originalModel, params.Model)
 	require.Equal(t, originalStream, params.Stream)
 	require.Equal(t, false, params.StreamOptions.IncludeUsage)
+}
+
+func TestCompletionStreamDrainsUpstreamAfterCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	firstChunkSent := make(chan struct{})
+	producerDone := make(chan struct{})
+	underlying := new(streamingProviderStub)
+	underlying.completionStream = func(
+		context.Context,
+		providers.CompletionParams,
+	) (<-chan providers.ChatCompletionChunk, <-chan error) {
+		chunks := make(chan providers.ChatCompletionChunk)
+		errs := make(chan error)
+
+		go func() {
+			defer close(chunks)
+			defer close(errs)
+			defer close(producerDone)
+
+			var chunk providers.ChatCompletionChunk
+			chunks <- chunk
+
+			close(firstChunkSent)
+
+			chunks <- chunk
+		}()
+
+		return chunks, errs
+	}
+
+	ready := make(chan struct{})
+	close(ready)
+
+	state := new(providerState)
+	state.provider = underlying
+	state.ready = ready
+	provider, err := New(config.WithAPIKey(validPlatformKey))
+	require.NoError(t, err)
+
+	provider.providers["openai"] = state
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	var params providers.CompletionParams
+
+	params.Model = "openai:model"
+	chunks, errs := provider.CompletionStream(ctx, params)
+
+	<-firstChunkSent
+	cancel()
+
+	require.ErrorIs(t, <-errs, context.Canceled)
+
+	for chunk := range chunks {
+		t.Fatalf("received unexpected chunk after cancellation: %#v", chunk)
+	}
+
+	select {
+	case <-producerDone:
+	case <-time.After(time.Second):
+		t.Fatal("upstream producer remained blocked after caller cancellation")
+	}
+}
+
+func TestInitializeProviderAllowsDifferentProvidersConcurrently(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		response.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	t.Setenv(envPlatformURL, server.URL)
+	provider, err := New(config.WithAPIKey(validPlatformKey))
+	require.NoError(t, err)
+
+	results := make(chan error, 2)
+	for _, name := range []string{"openai", "anthropic"} {
+		go func() {
+			_, initErr := provider.initializeProvider(t.Context(), name)
+			results <- initErr
+		}()
+	}
+
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("different providers did not initialize concurrently")
+		}
+	}
+	close(release)
+	for range 2 {
+		require.Error(t, <-results)
+	}
+}
+
+func TestInitializeProviderWaiterCanBeCanceled(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		response.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	t.Setenv(envPlatformURL, server.URL)
+	provider, err := New(config.WithAPIKey(validPlatformKey))
+	require.NoError(t, err)
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, initErr := provider.initializeProvider(t.Context(), "openai")
+		firstResult <- initErr
+	}()
+	<-started
+
+	waiterCtx, cancelWaiter := context.WithCancel(t.Context())
+	cancelWaiter()
+	_, err = provider.initializeProvider(waiterCtx, "openai")
+	require.ErrorIs(t, err, context.Canceled)
+
+	close(release)
+	require.Error(t, <-firstResult)
+}
+
+func TestInitializeProviderSurvivesInitiatorCancellation(t *testing.T) {
+	t.Parallel()
+
+	provider, err := New(config.WithAPIKey(validPlatformKey))
+	require.NoError(t, err)
+
+	requestStarted := make(chan *http.Request, 1)
+	release := make(chan struct{})
+	provider.httpClient.Timeout = time.Minute
+	provider.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestStarted <- request
+
+		<-release
+
+		response := new(http.Response)
+		response.StatusCode = http.StatusUnauthorized
+		response.Header = make(http.Header)
+		response.Body = http.NoBody
+		response.Request = request
+
+		return response, nil
+	})
+
+	initiatorCtx, cancelInitiator := context.WithCancel(t.Context())
+	initiatorResult := make(chan error, 1)
+
+	go func() {
+		_, initErr := provider.initializeProvider(initiatorCtx, "openai")
+		initiatorResult <- initErr
+	}()
+
+	request := <-requestStarted
+
+	provider.mu.Lock()
+	state := provider.providers["openai"]
+	provider.mu.Unlock()
+	require.NotNil(t, state)
+
+	cancelInitiator()
+	require.ErrorIs(t, <-initiatorResult, context.Canceled)
+	require.NoError(t, request.Context().Err())
+	close(release)
+	<-state.ready
+	require.Error(t, state.err)
+}
+
+func TestInitializeProviderRetriesAfterFailure(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		response.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	t.Setenv(envPlatformURL, server.URL)
+	provider, err := New(config.WithAPIKey(validPlatformKey))
+	require.NoError(t, err)
+
+	_, err = provider.initializeProvider(t.Context(), "openai")
+	require.Error(t, err)
+	_, err = provider.initializeProvider(t.Context(), "openai")
+	require.Error(t, err)
+	require.Equal(t, int32(2), requests.Load())
 }
 
 // Integration tests - require actual platform connection and ANY_LLM_KEY

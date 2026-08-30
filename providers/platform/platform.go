@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,7 @@ import (
 
 // Provider configuration constants.
 const (
+	defaultHTTPTimeout = 30 * time.Second
 	defaultPlatformURL = "https://platform-api.any-llm.ai/api/v1"
 	envAPIKey          = "ANY_LLM_KEY"
 	envPlatformURL     = "ANY_LLM_PLATFORM_URL"
@@ -52,20 +54,27 @@ var supportedProviders = map[string]newProviderFunc{
 // It proxies requests to underlying providers (OpenAI, Anthropic, etc.) after
 // authenticating with the platform to get decrypted API keys.
 type Provider struct {
-	anyLLMKey          string
-	clientName         string
-	config             *config.Config
-	httpClient         *http.Client
-	platformClient     *anyllmplatform.Client
-	platformURL        string
-	projectID          string
-	providerKeyID      string
-	underlyingName     string
-	underlyingProvider providers.Provider
+	anyLLMKey   string
+	clientName  string
+	config      *config.Config
+	httpClient  *http.Client
+	mu          sync.Mutex
+	platformURL string
+	providers   map[string]*providerState
 }
 
 // newProviderFunc creates a provider with the given options.
 type newProviderFunc func(opts ...config.Option) (providers.Provider, error)
+
+type providerState struct {
+	client        *anyllmplatform.Client
+	err           error
+	name          string
+	provider      providers.Provider
+	providerKeyID string
+	ready         chan struct{}
+	tokenMu       sync.Mutex
+}
 
 // streamingMetrics holds performance metrics for streaming requests.
 type streamingMetrics struct {
@@ -105,10 +114,6 @@ func New(opts ...config.Option) (*Provider, error) {
 		platformURL = defaultPlatformURL
 	}
 
-	platformClient := anyllmplatform.NewClient(
-		anyllmplatform.WithPlatformURL(platformURL),
-	)
-
 	// Read client name from Extra if set.
 	var clientName string
 	if v, ok := cfg.ExtraValue("client_name"); ok {
@@ -116,12 +121,12 @@ func New(opts ...config.Option) (*Provider, error) {
 	}
 
 	return &Provider{
-		anyLLMKey:      anyLLMKey,
-		clientName:     clientName,
-		config:         cfg,
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
-		platformClient: platformClient,
-		platformURL:    platformURL,
+		anyLLMKey:   anyLLMKey,
+		clientName:  clientName,
+		config:      cfg,
+		httpClient:  &http.Client{Timeout: defaultHTTPTimeout},
+		platformURL: platformURL,
+		providers:   make(map[string]*providerState),
 	}, nil
 }
 
@@ -160,7 +165,8 @@ func (p *Provider) Completion(
 	}
 
 	// Initialize the underlying provider.
-	if err := p.initializeProvider(ctx, providerName); err != nil {
+	state, err := p.initializeProvider(ctx, providerName)
+	if err != nil {
 		return nil, err
 	}
 
@@ -169,14 +175,14 @@ func (p *Provider) Completion(
 	completionParams.Model = modelID
 
 	// Delegate to the underlying provider.
-	completion, err := p.underlyingProvider.Completion(ctx, completionParams)
+	completion, err := state.provider.Completion(ctx, completionParams)
 	if err != nil {
 		return nil, err
 	}
 
 	// Post usage event.
 	totalDurationMs := float64(time.Since(startTime).Milliseconds())
-	go p.postUsageEvent(context.Background(), completion, nil, totalDurationMs)
+	go p.postUsageEvent(context.WithoutCancel(ctx), completion, nil, totalDurationMs, state)
 
 	return completion, nil
 }
@@ -203,7 +209,8 @@ func (p *Provider) CompletionStream(
 		}
 
 		// Initialize the underlying provider.
-		if err := p.initializeProvider(ctx, providerName); err != nil {
+		state, err := p.initializeProvider(ctx, providerName)
+		if err != nil {
 			errs <- err
 			return
 		}
@@ -224,7 +231,7 @@ func (p *Provider) CompletionStream(
 		}
 
 		// Get the stream from the underlying provider.
-		upstreamChunks, upstreamErrs := p.underlyingProvider.CompletionStream(ctx, streamParams)
+		upstreamChunks, upstreamErrs := state.provider.CompletionStream(ctx, streamParams)
 
 		// Track streaming metrics.
 		var (
@@ -259,7 +266,28 @@ func (p *Provider) CompletionStream(
 			previousChunkTime = &currentTime
 
 			collectedChunks = append(collectedChunks, chunk)
-			chunks <- chunk
+			select {
+			case chunks <- chunk:
+			case <-ctx.Done():
+				// Keep consuming both upstream channels so a provider blocked on a
+				// send can finish closing its response body after caller cancellation.
+				go func() {
+					for upstreamChunks != nil || upstreamErrs != nil {
+						select {
+						case _, ok := <-upstreamChunks:
+							if !ok {
+								upstreamChunks = nil
+							}
+						case _, ok := <-upstreamErrs:
+							if !ok {
+								upstreamErrs = nil
+							}
+						}
+					}
+				}()
+				errs <- ctx.Err()
+				return
+			}
 		}
 
 		// Check for upstream errors.
@@ -296,7 +324,13 @@ func (p *Provider) CompletionStream(
 				metrics.interChunkLatencyVarianceMs = &variance
 			}
 
-			go p.postUsageEvent(context.Background(), completion, metrics, totalDurationMs)
+			go p.postUsageEvent(
+				context.WithoutCancel(ctx),
+				completion,
+				metrics,
+				totalDurationMs,
+				state,
+			)
 		}
 	}()
 
@@ -309,33 +343,88 @@ func (p *Provider) Name() string {
 }
 
 // initializeProvider initializes the underlying provider for the given provider name.
-func (p *Provider) initializeProvider(ctx context.Context, providerName string) error {
-	if p.underlyingProvider != nil && p.underlyingName == providerName {
-		return nil // Already initialized for this provider.
-	}
-
-	// Get decrypted provider key from the platform.
-	result, err := p.platformClient.GetDecryptedProviderKey(ctx, p.anyLLMKey, providerName)
-	if err != nil {
-		return fmt.Errorf("failed to get provider key: %w", err)
-	}
-
-	p.providerKeyID = result.ProviderKeyID.String()
-	p.projectID = result.ProjectID.String()
-
-	// Create the underlying provider using the decrypted API key.
-	constructor, ok := supportedProviders[strings.ToLower(providerName)]
+func (p *Provider) initializeProvider(
+	ctx context.Context,
+	providerName string,
+) (*providerState, error) {
+	providerName = strings.ToLower(providerName)
+	constructor, ok := supportedProviders[providerName]
 	if !ok {
-		return fmt.Errorf("unsupported provider: %s", providerName)
+		return nil, fmt.Errorf("unsupported provider: %s", providerName)
 	}
+
+	p.mu.Lock()
+	state, exists := p.providers[providerName]
+	if exists {
+		p.mu.Unlock()
+
+		return waitForProviderInitialization(ctx, state)
+	}
+	state = &providerState{name: providerName, ready: make(chan struct{})}
+	p.providers[providerName] = state
+	p.mu.Unlock()
+
+	// Initialization is shared by every waiter. Run it independently so the
+	// initiating caller can stop waiting without canceling the shared request.
+	// The HTTP client supplies the initialization timeout.
+	go p.initializeProviderState(context.WithoutCancel(ctx), providerName, constructor, state)
+
+	return waitForProviderInitialization(ctx, state)
+}
+
+func (p *Provider) initializeProviderState(
+	ctx context.Context,
+	providerName string,
+	constructor newProviderFunc,
+	state *providerState,
+) {
+	// v0.0.1 stores mutable authentication state without internal locking. Keep one
+	// client per provider and serialize its token refreshes.
+	// See https://github.com/mozilla-ai/any-llm-platform-client-go/blob/v0.0.1/client.go.
+	client := anyllmplatform.NewClient(
+		anyllmplatform.WithPlatformURL(p.platformURL),
+		anyllmplatform.WithHTTPClient(p.httpClient),
+	)
+	result, err := client.GetDecryptedProviderKey(ctx, p.anyLLMKey, providerName)
+	if err != nil {
+		err = fmt.Errorf("failed to get provider key: %w", err)
+		p.completeProviderInitialization(providerName, state, err)
+
+		return
+	}
+
 	provider, err := constructor(config.WithAPIKey(result.APIKey))
 	if err != nil {
-		return fmt.Errorf("failed to create provider %q: %w", providerName, err)
+		err = fmt.Errorf("failed to create provider %q: %w", providerName, err)
+		p.completeProviderInitialization(providerName, state, err)
+
+		return
 	}
 
-	p.underlyingProvider = provider
-	p.underlyingName = providerName
-	return nil
+	state.client = client
+	state.provider = provider
+	state.providerKeyID = result.ProviderKeyID.String()
+	p.completeProviderInitialization(providerName, state, nil)
+}
+
+func waitForProviderInitialization(ctx context.Context, state *providerState) (*providerState, error) {
+	select {
+	case <-state.ready:
+		return state, state.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for provider initialization: %w", ctx.Err())
+	}
+}
+
+func (p *Provider) completeProviderInitialization(providerName string, state *providerState, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state.err = err
+	if err != nil {
+		delete(p.providers, providerName)
+	}
+	close(state.ready)
 }
 
 // postUsageEvent posts a usage event to the platform.
@@ -344,13 +433,16 @@ func (p *Provider) postUsageEvent(
 	completion *providers.ChatCompletion,
 	metrics *streamingMetrics,
 	totalDurationMs float64,
+	state *providerState,
 ) {
 	if completion == nil || completion.Usage == nil {
 		return
 	}
 
 	// Get access token for Bearer authentication.
-	accessToken, err := p.platformClient.GetAccessToken(ctx, p.anyLLMKey)
+	state.tokenMu.Lock()
+	accessToken, err := state.client.GetAccessToken(ctx, p.anyLLMKey)
+	state.tokenMu.Unlock()
 	if err != nil {
 		return
 	}
@@ -391,8 +483,8 @@ func (p *Provider) postUsageEvent(
 	}
 
 	payload := usageEventPayload{
-		ProviderKeyID: p.providerKeyID,
-		Provider:      p.underlyingName,
+		ProviderKeyID: state.providerKeyID,
+		Provider:      state.name,
 		Model:         completion.Model,
 		Data:          data,
 		ID:            uuid.New().String(),
