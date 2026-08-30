@@ -4,12 +4,14 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"reflect"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/shared"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/mozilla-ai/any-llm-go/config"
 	"github.com/mozilla-ai/any-llm-go/errors"
@@ -45,6 +47,11 @@ const (
 const (
 	responseFormatJSONObject = "json_object"
 	responseFormatJSONSchema = "json_schema"
+)
+
+const (
+	extraKeyResponseDelta   = "response_delta"
+	extraKeyResponseMessage = "response_message"
 )
 
 // CompatibleConfig contains the configuration for an OpenAI-compatible provider.
@@ -167,11 +174,11 @@ func (p *CompatibleProvider) Completion(
 	ctx context.Context,
 	params providers.CompletionParams,
 ) (*providers.ChatCompletion, error) {
-	if err := validateCompletionParams(params); err != nil {
+	if err := validateCompletionParams(params, p.Name()); err != nil {
 		return nil, err
 	}
 
-	req := convertParams(params)
+	req := convertParams(params, p.Name())
 	if p.compatibleConfig.ChatCompletionRequestTransform != nil {
 		p.compatibleConfig.ChatCompletionRequestTransform(&req)
 	}
@@ -181,7 +188,7 @@ func (p *CompatibleProvider) Completion(
 		return nil, p.ConvertError(err)
 	}
 
-	return convertResponse(resp), nil
+	return convertResponse(resp, p.Name()), nil
 }
 
 // CompletionStream performs a streaming chat completion request.
@@ -196,12 +203,12 @@ func (p *CompatibleProvider) CompletionStream(
 		defer close(chunks)
 		defer close(errs)
 
-		if err := validateCompletionParams(params); err != nil {
+		if err := validateCompletionParams(params, p.Name()); err != nil {
 			errs <- err
 			return
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, p.Name())
 		if p.compatibleConfig.ChatCompletionRequestTransform != nil {
 			p.compatibleConfig.ChatCompletionRequestTransform(&req)
 		}
@@ -210,7 +217,7 @@ func (p *CompatibleProvider) CompletionStream(
 		for stream.Next() {
 			chunk := stream.Current()
 			select {
-			case chunks <- convertChunk(&chunk):
+			case chunks <- convertChunk(&chunk, p.Name()):
 			case <-ctx.Done():
 				// Caller cancelled mid-stream; surface ctx.Err() so the
 				// consumer can tell a cancelled stream apart from one
@@ -255,6 +262,11 @@ func (p *CompatibleProvider) Embedding(
 	ctx context.Context,
 	params providers.EmbeddingParams,
 ) (*providers.EmbeddingResponse, error) {
+	switch params.Input.(type) {
+	case string, []string:
+	default:
+		return nil, errors.NewInvalidRequestError("", fmt.Errorf("embedding input must be a string or []string"))
+	}
 	req := convertEmbeddingParams(params)
 
 	resp, err := p.client.Embeddings.New(ctx, req)
@@ -326,32 +338,53 @@ func convertAPIError(name string, apiErr *openai.Error, originalErr error) error
 }
 
 // convertAssistantMessage converts an assistant message to OpenAI format.
-func convertAssistantMessage(msg providers.Message) openai.ChatCompletionMessageParamUnion {
-	if len(msg.ToolCalls) > 0 {
-		toolCalls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(msg.ToolCalls))
-		for _, tc := range msg.ToolCalls {
-			toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
+func convertAssistantMessage(msg providers.Message, name string) (openai.ChatCompletionMessageParamUnion, error) {
+	if assistant, ok, err := responseMessageFromExtra(msg, name); err != nil {
+		return openai.ChatCompletionMessageParamUnion{}, err
+	} else if ok {
+		return openai.ChatCompletionMessageParamUnion{OfAssistant: assistant}, nil
+	}
+
+	assistant := &openai.ChatCompletionAssistantMessageParam{}
+	if msg.IsMultiModal() {
+		content := make(
+			[]openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion,
+			0,
+			len(msg.ContentParts()),
+		)
+		for _, part := range msg.ContentParts() {
+			if part.Type != contentTypeText {
+				return openai.ChatCompletionMessageParamUnion{}, errors.NewInvalidRequestError(
+					name,
+					fmt.Errorf("unsupported assistant content part type: %q", part.Type),
+				)
+			}
+			content = append(content, openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: part.Text},
+			})
+		}
+		assistant.Content.OfArrayOfContentParts = content
+	} else if msg.Content != nil {
+		assistant.Content.OfString = openai.String(msg.ContentString())
+	}
+
+	assistant.ToolCalls = make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+			OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
 				ID: tc.ID,
-				Function: openai.ChatCompletionMessageToolCallFunctionParam{
+				Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				},
-			})
-		}
-		return openai.ChatCompletionMessageParamUnion{
-			OfAssistant: &openai.ChatCompletionAssistantMessageParam{
-				Content: openai.ChatCompletionAssistantMessageParamContentUnion{
-					OfString: openai.String(msg.ContentString()),
-				},
-				ToolCalls: toolCalls,
 			},
-		}
+		})
 	}
-	return openai.AssistantMessage(msg.ContentString())
+	return openai.ChatCompletionMessageParamUnion{OfAssistant: assistant}, nil
 }
 
 // convertChunk converts an OpenAI streaming chunk to provider format.
-func convertChunk(chunk *openai.ChatCompletionChunk) providers.ChatCompletionChunk {
+func convertChunk(chunk *openai.ChatCompletionChunk, name string) providers.ChatCompletionChunk {
 	choices := make([]providers.ChunkChoice, 0, len(chunk.Choices))
 	for _, choice := range chunk.Choices {
 		chunkChoice := providers.ChunkChoice{
@@ -359,6 +392,7 @@ func convertChunk(chunk *openai.ChatCompletionChunk) providers.ChatCompletionChu
 			Delta: providers.ChunkDelta{
 				Role:    string(choice.Delta.Role),
 				Content: choice.Delta.Content,
+				Extra:   responseDeltaExtra(choice.Delta, name),
 			},
 			FinishReason: string(choice.FinishReason),
 		}
@@ -380,16 +414,17 @@ func convertChunk(chunk *openai.ChatCompletionChunk) providers.ChatCompletionChu
 		choices = append(choices, chunkChoice)
 	}
 
+	// Keep the fingerprint wire metadata despite the SDK deprecation.
 	result := providers.ChatCompletionChunk{
 		ID:                chunk.ID,
 		Object:            objectChatCompletionChunk,
 		Created:           chunk.Created,
 		Model:             chunk.Model,
 		Choices:           choices,
-		SystemFingerprint: chunk.SystemFingerprint,
+		SystemFingerprint: chunk.SystemFingerprint, //nolint:staticcheck
 	}
 
-	if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+	if chunk.JSON.Usage.Valid() {
 		result.Usage = &providers.Usage{
 			PromptTokens:     int(chunk.Usage.PromptTokens),
 			CompletionTokens: int(chunk.Usage.CompletionTokens),
@@ -414,11 +449,6 @@ func convertEmbeddingParams(params providers.EmbeddingParams) openai.EmbeddingNe
 	case []string:
 		req.Input = openai.EmbeddingNewParamsInputUnion{
 			OfArrayOfStrings: v,
-		}
-	default:
-		// For unsupported types, convert to string representation.
-		req.Input = openai.EmbeddingNewParamsInputUnion{
-			OfString: openai.String(fmt.Sprintf("%v", params.Input)),
 		}
 	}
 
@@ -456,7 +486,7 @@ func convertEmbeddingResponse(resp *openai.CreateEmbeddingResponse) *providers.E
 		Model:  resp.Model,
 	}
 
-	if resp.Usage.PromptTokens > 0 || resp.Usage.TotalTokens > 0 {
+	if resp.JSON.Usage.Valid() {
 		result.Usage = &providers.EmbeddingUsage{
 			PromptTokens: int(resp.Usage.PromptTokens),
 			TotalTokens:  int(resp.Usage.TotalTokens),
@@ -467,10 +497,10 @@ func convertEmbeddingResponse(resp *openai.CreateEmbeddingResponse) *providers.E
 }
 
 // convertMessage converts a single message to OpenAI format.
-func convertMessage(msg providers.Message) (openai.ChatCompletionMessageParamUnion, error) {
+func convertMessage(msg providers.Message, name string) (openai.ChatCompletionMessageParamUnion, error) {
 	switch msg.Role {
 	case providers.RoleAssistant:
-		return convertAssistantMessage(msg), nil
+		return convertAssistantMessage(msg, name)
 	case providers.RoleSystem:
 		return openai.SystemMessage(msg.ContentString()), nil
 	case providers.RoleTool:
@@ -483,10 +513,10 @@ func convertMessage(msg providers.Message) (openai.ChatCompletionMessageParamUni
 }
 
 // convertMessages converts provider messages to OpenAI format.
-func convertMessages(messages []providers.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+func convertMessages(messages []providers.Message, name string) ([]openai.ChatCompletionMessageParamUnion, error) {
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, msg := range messages {
-		converted, err := convertMessage(msg)
+		converted, err := convertMessage(msg, name)
 		if err != nil {
 			return nil, err
 		}
@@ -496,12 +526,37 @@ func convertMessages(messages []providers.Message) ([]openai.ChatCompletionMessa
 }
 
 // convertParams converts providers.CompletionParams to OpenAI request parameters.
-func convertParams(params providers.CompletionParams) openai.ChatCompletionNewParams {
-	messages, _ := convertMessages(params.Messages) // Error already checked in validateCompletionParams
+func convertParams(params providers.CompletionParams, name string) openai.ChatCompletionNewParams {
+	messages, _ := convertMessages(params.Messages, name) // Error already checked in validateCompletionParams
 
 	req := openai.ChatCompletionNewParams{
 		Model:    openai.ChatModel(params.Model),
 		Messages: messages,
+	}
+	req.SetExtraFields(params.Extra)
+	if params.FrequencyPenalty != nil {
+		req.FrequencyPenalty = openai.Float(*params.FrequencyPenalty)
+	}
+	if params.Logprobs != nil {
+		req.Logprobs = openai.Bool(*params.Logprobs)
+	}
+	if params.LogitBias != nil {
+		req.LogitBias = make(map[string]int64, len(params.LogitBias))
+		for token, bias := range params.LogitBias {
+			req.LogitBias[token] = int64(bias)
+		}
+	}
+	if params.N != nil {
+		req.N = openai.Int(int64(*params.N))
+	}
+	if params.PresencePenalty != nil {
+		req.PresencePenalty = openai.Float(*params.PresencePenalty)
+	}
+	if params.Store != nil {
+		req.Store = openai.Bool(*params.Store)
+	}
+	if params.TopLogprobs != nil {
+		req.TopLogprobs = openai.Int(int64(*params.TopLogprobs))
 	}
 
 	if params.Temperature != nil {
@@ -546,7 +601,10 @@ func convertParams(params providers.CompletionParams) openai.ChatCompletionNewPa
 		req.User = openai.String(params.User)
 	}
 
-	if params.ReasoningEffort != "" && params.ReasoningEffort != providers.ReasoningEffortNone {
+	// auto is the any-llm default sentinel. OpenAI documents none as an
+	// explicit effort, so it must reach the wire unchanged.
+	// https://developers.openai.com/api/docs/guides/reasoning
+	if params.ReasoningEffort != "" && params.ReasoningEffort != providers.ReasoningEffortAuto {
 		req.ReasoningEffort = shared.ReasoningEffort(params.ReasoningEffort)
 	}
 
@@ -560,26 +618,27 @@ func convertParams(params providers.CompletionParams) openai.ChatCompletionNewPa
 }
 
 // convertResponse converts an OpenAI response to provider format.
-func convertResponse(resp *openai.ChatCompletion) *providers.ChatCompletion {
+func convertResponse(resp *openai.ChatCompletion, name string) *providers.ChatCompletion {
 	choices := make([]providers.Choice, 0, len(resp.Choices))
 	for _, choice := range resp.Choices {
 		choices = append(choices, providers.Choice{
 			Index:        int(choice.Index),
-			Message:      convertResponseMessage(choice.Message),
+			Message:      convertResponseMessage(choice.Message, name),
 			FinishReason: string(choice.FinishReason),
 		})
 	}
 
+	// Keep the fingerprint wire metadata despite the SDK deprecation.
 	result := &providers.ChatCompletion{
 		ID:                resp.ID,
 		Object:            objectChatCompletion,
 		Created:           resp.Created,
 		Model:             resp.Model,
 		Choices:           choices,
-		SystemFingerprint: resp.SystemFingerprint,
+		SystemFingerprint: resp.SystemFingerprint, //nolint:staticcheck
 	}
 
-	if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
+	if resp.JSON.Usage.Valid() {
 		result.Usage = &providers.Usage{
 			PromptTokens:     int(resp.Usage.PromptTokens),
 			CompletionTokens: int(resp.Usage.CompletionTokens),
@@ -626,10 +685,11 @@ func convertResponseFormat(format *providers.ResponseFormat) openai.ChatCompleti
 }
 
 // convertResponseMessage converts an OpenAI response message to provider format.
-func convertResponseMessage(msg openai.ChatCompletionMessage) providers.Message {
+func convertResponseMessage(msg openai.ChatCompletionMessage, name string) providers.Message {
 	result := providers.Message{
 		Role:    string(msg.Role),
 		Content: msg.Content,
+		Extra:   responseMessageExtra(msg, name),
 	}
 
 	if len(msg.ToolCalls) > 0 {
@@ -649,6 +709,93 @@ func convertResponseMessage(msg openai.ChatCompletionMessage) providers.Message 
 	return result
 }
 
+func responseMessageExtra(msg openai.ChatCompletionMessage, name string) map[string]providers.ProviderData {
+	if !hasUnnormalizedResponseMessage(msg) || msg.RawJSON() == "" {
+		return nil
+	}
+	return openAIResponseExtra(name, extraKeyResponseMessage, json.RawMessage(msg.RawJSON()))
+}
+
+func responseDeltaExtra(delta openai.ChatCompletionChunkChoiceDelta, name string) map[string]providers.ProviderData {
+	if !hasUnnormalizedResponseDelta(delta) || delta.RawJSON() == "" {
+		return nil
+	}
+	return openAIResponseExtra(name, extraKeyResponseDelta, json.RawMessage(delta.RawJSON()))
+}
+
+func openAIResponseExtra(name, key string, value any) map[string]providers.ProviderData {
+	return map[string]providers.ProviderData{
+		name: {key: value},
+	}
+}
+
+func hasUnnormalizedResponseMessage(msg openai.ChatCompletionMessage) bool {
+	if msg.JSON.Refusal.Valid() || msg.JSON.Annotations.Valid() || msg.JSON.Audio.Valid() ||
+		msg.JSON.FunctionCall.Valid() || len(msg.JSON.ExtraFields) > 0 {
+		return true
+	}
+	for _, call := range msg.ToolCalls {
+		if _, ok := call.AsAny().(openai.ChatCompletionMessageFunctionToolCall); !ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnnormalizedResponseDelta(delta openai.ChatCompletionChunkChoiceDelta) bool {
+	return delta.JSON.Refusal.Valid() || delta.JSON.FunctionCall.Valid() || len(delta.JSON.ExtraFields) > 0
+}
+
+func responseMessageFromExtra(
+	msg providers.Message,
+	name string,
+) (*openai.ChatCompletionAssistantMessageParam, bool, error) {
+	data, ok := msg.Extra[name]
+	if !ok {
+		return nil, false, nil
+	}
+	value, ok := data[extraKeyResponseMessage]
+	if !ok {
+		return nil, false, nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, false, errors.NewInvalidRequestError(
+			name,
+			fmt.Errorf("serializing OpenAI response message metadata: %w", err),
+		)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, false, errors.NewInvalidRequestError(
+			name,
+			fmt.Errorf("decoding OpenAI response message metadata: %w", err),
+		)
+	}
+	var assistant openai.ChatCompletionAssistantMessageParam
+	if err := json.Unmarshal(raw, &assistant); err != nil {
+		return nil, false, errors.NewInvalidRequestError(
+			name,
+			fmt.Errorf("decoding OpenAI response message metadata: %w", err),
+		)
+	}
+	var response openai.ChatCompletionMessage
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, false, errors.NewInvalidRequestError(
+			name,
+			fmt.Errorf("decoding OpenAI response message metadata: %w", err),
+		)
+	}
+	normalized := convertResponseMessage(response, name)
+	if !reflect.DeepEqual(msg.Content, normalized.Content) || !reflect.DeepEqual(msg.ToolCalls, normalized.ToolCalls) {
+		return nil, false, errors.NewInvalidRequestError(
+			name,
+			fmt.Errorf("response message metadata conflicts with normalized content or tool calls"),
+		)
+	}
+	return &assistant, true, nil
+}
+
 // convertToolChoice converts provider tool choice to OpenAI format.
 func convertToolChoice(choice any) openai.ChatCompletionToolChoiceOptionUnionParam {
 	switch v := choice.(type) {
@@ -658,7 +805,7 @@ func convertToolChoice(choice any) openai.ChatCompletionToolChoiceOptionUnionPar
 		}
 	case providers.ToolChoice:
 		if v.Function != nil {
-			return openai.ChatCompletionToolChoiceOptionParamOfChatCompletionNamedToolChoice(
+			return openai.ToolChoiceOptionFunctionToolChoice(
 				openai.ChatCompletionNamedToolChoiceFunctionParam{
 					Name: v.Function.Name,
 				},
@@ -671,16 +818,16 @@ func convertToolChoice(choice any) openai.ChatCompletionToolChoiceOptionUnionPar
 }
 
 // convertTools converts provider tools to OpenAI format.
-func convertTools(tools []providers.Tool) []openai.ChatCompletionToolParam {
-	result := make([]openai.ChatCompletionToolParam, 0, len(tools))
+func convertTools(tools []providers.Tool) []openai.ChatCompletionToolUnionParam {
+	result := make([]openai.ChatCompletionToolUnionParam, 0, len(tools))
 	for _, tool := range tools {
-		result = append(result, openai.ChatCompletionToolParam{
-			Function: openai.FunctionDefinitionParam{
+		result = append(result, openai.ChatCompletionFunctionTool(
+			openai.FunctionDefinitionParam{
 				Name:        tool.Function.Name,
 				Description: openai.String(tool.Function.Description),
 				Parameters:  openai.FunctionParameters(tool.Function.Parameters),
 			},
-		})
+		))
 	}
 	return result
 }
@@ -722,8 +869,8 @@ func validateCompatibleConfig(cfg CompatibleConfig) error {
 	return nil
 }
 
-// validateCompletionParams validates completion parameters.
-func validateCompletionParams(params providers.CompletionParams) error {
+// validateCompletionParams validates requirements shared by compatible APIs.
+func validateCompletionParams(params providers.CompletionParams, name string) error {
 	if params.Model == "" {
 		return errors.NewInvalidRequestError("", fmt.Errorf("model is required"))
 	}
@@ -733,7 +880,7 @@ func validateCompletionParams(params providers.CompletionParams) error {
 
 	// Validate message roles.
 	for _, msg := range params.Messages {
-		if _, err := convertMessage(msg); err != nil {
+		if _, err := convertMessage(msg, name); err != nil {
 			return errors.NewInvalidRequestError("", err)
 		}
 	}

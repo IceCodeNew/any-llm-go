@@ -2,17 +2,217 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	oaisdk "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mozilla-ai/any-llm-go/config"
 	"github.com/mozilla-ai/any-llm-go/errors"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
+
+func TestConvertParamsPreservesExplicitEmptyLogitBias(t *testing.T) {
+	t.Parallel()
+
+	params := providers.CompletionParams{Model: "gpt-5.6", LogitBias: map[string]int{}}
+	wire, err := json.Marshal(convertParams(params, providerName))
+	require.NoError(t, err)
+
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.JSONEq(t, `{}`, string(body["logit_bias"]))
+
+	params.LogitBias = nil
+	wire, err = json.Marshal(convertParams(params, providerName))
+	require.NoError(t, err)
+	body = nil
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.NotContains(t, body, "logit_bias")
+}
+
+func TestConvertAssistantMessagePreservesTextPartsBesideToolCalls(t *testing.T) {
+	t.Parallel()
+
+	message, err := convertAssistantMessage(providers.Message{
+		Role: providers.RoleAssistant,
+		Content: []providers.ContentPart{
+			{Type: contentTypeText, Text: "before"},
+			{Type: contentTypeText, Text: "after"},
+		},
+		ToolCalls: []providers.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: providers.FunctionCall{
+				Name:      "lookup",
+				Arguments: "{}",
+			},
+		}},
+	}, providerName)
+	require.NoError(t, err)
+
+	wire, err := json.Marshal(message)
+	require.NoError(t, err)
+	var body struct {
+		Content []struct {
+			Text string `json:"text"`
+			Type string `json:"type"`
+		} `json:"content"`
+		ToolCalls []json.RawMessage `json:"tool_calls"`
+	}
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.Equal(t, "before", body.Content[0].Text)
+	require.Equal(t, "text", body.Content[0].Type)
+	require.Equal(t, "after", body.Content[1].Text)
+	require.Len(t, body.ToolCalls, 1)
+}
+
+func TestConvertAssistantMessageRejectsUnsupportedContentParts(t *testing.T) {
+	t.Parallel()
+
+	_, err := convertAssistantMessage(providers.Message{
+		Role: providers.RoleAssistant,
+		Content: []providers.ContentPart{{
+			Type:     contentTypeImageURL,
+			ImageURL: &providers.ImageURL{URL: "https://example.test/image.png"},
+		}},
+	}, providerName)
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+}
+
+func TestConvertResponsePreservesUnnormalizedMessageFields(t *testing.T) {
+	t.Parallel()
+
+	const rawMessage = `{"role":"assistant","content":"","refusal":"","annotations":[],` +
+		`"audio":null,"function_call":{"name":"legacy","arguments":"{}"},` +
+		`"tool_calls":[{"id":"call-1","type":"custom","custom":{"name":"shell","input":""}}]}`
+	var message oaisdk.ChatCompletionMessage
+	require.NoError(t, json.Unmarshal([]byte(rawMessage), &message))
+
+	converted := convertResponseMessage(message, providerName)
+	encoded, err := json.Marshal(converted)
+	require.NoError(t, err)
+	var restored providers.Message
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+
+	metadata, ok := restored.Extra[providerName][extraKeyResponseMessage].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "", metadata["refusal"])
+	require.Equal(t, []any{}, metadata["annotations"])
+	require.Contains(t, metadata, "audio")
+
+	replayed, err := convertAssistantMessage(restored, providerName)
+	require.NoError(t, err)
+	wire, err := json.Marshal(replayed)
+	require.NoError(t, err)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.Equal(t, "", body["content"])
+	require.Equal(t, "", body["refusal"])
+	toolCalls, ok := body["tool_calls"].([]any)
+	require.True(t, ok)
+	customCall, ok := toolCalls[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "custom", customCall["type"])
+}
+
+func TestConvertResponseUsesConfiguredMetadataNamespace(t *testing.T) {
+	t.Parallel()
+
+	const name = "azureopenai"
+	var response oaisdk.ChatCompletionMessage
+	require.NoError(t, json.Unmarshal([]byte(`{"role":"assistant","content":"","refusal":""}`), &response))
+
+	message := convertResponseMessage(response, name)
+	require.Contains(t, message.Extra, name)
+	require.NotContains(t, message.Extra, providerName)
+
+	_, err := convertAssistantMessage(message, name)
+	require.NoError(t, err)
+}
+
+func TestConvertAssistantMessageRejectsInvalidResponseMetadata(t *testing.T) {
+	t.Parallel()
+
+	for name, value := range map[string]any{
+		"invalid JSON shape": "invalid",
+		"unencodable value":  make(chan int),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := convertAssistantMessage(providers.Message{
+				Role: providers.RoleAssistant,
+				Extra: map[string]providers.ProviderData{
+					providerName: {extraKeyResponseMessage: value},
+				},
+			}, providerName)
+			require.ErrorIs(t, err, errors.ErrInvalidRequest)
+		})
+	}
+}
+
+func TestConvertAssistantMessageRejectsEditsThatConflictWithResponseMetadata(t *testing.T) {
+	t.Parallel()
+
+	var response oaisdk.ChatCompletionMessage
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"role":"assistant","content":"original","refusal":"", "tool_calls":[]
+	}`), &response))
+	message := convertResponseMessage(response, providerName)
+	message.Content = "edited"
+
+	_, err := convertAssistantMessage(message, providerName)
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+}
+
+func TestConvertChunkPreservesUnnormalizedDeltaFields(t *testing.T) {
+	t.Parallel()
+
+	var chunk oaisdk.ChatCompletionChunk
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"choices":[{"index":0,"delta":{"content":"","refusal":"","function_call":{"name":"","arguments":""}}}]
+	}`), &chunk))
+
+	converted := convertChunk(&chunk, providerName)
+	metadata, ok := converted.Choices[0].Delta.Extra[providerName][extraKeyResponseDelta].(json.RawMessage)
+	require.True(t, ok)
+	var delta map[string]any
+	require.NoError(t, json.Unmarshal(metadata, &delta))
+	require.Equal(t, "", delta["content"])
+	require.Equal(t, "", delta["refusal"])
+	require.Contains(t, delta, "function_call")
+}
+
+func TestConvertResponsePreservesAllZeroUsage(t *testing.T) {
+	t.Parallel()
+
+	var response oaisdk.ChatCompletion
+	require.NoError(
+		t,
+		json.Unmarshal([]byte(`{"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`), &response),
+	)
+
+	result := convertResponse(&response, providerName)
+	require.Equal(t, &providers.Usage{}, result.Usage)
+}
+
+func TestConvertChunkPreservesAllZeroUsage(t *testing.T) {
+	t.Parallel()
+
+	var chunk oaisdk.ChatCompletionChunk
+	require.NoError(
+		t,
+		json.Unmarshal([]byte(`{"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`), &chunk),
+	)
+
+	result := convertChunk(&chunk, providerName)
+	require.Equal(t, &providers.Usage{}, result.Usage)
+}
 
 func TestNewCompatible(t *testing.T) {
 	// Note: Not using t.Parallel() here because child test uses t.Setenv.
@@ -223,7 +423,7 @@ func TestValidateCompletionParams(t *testing.T) {
 			Messages: []providers.Message{{Role: providers.RoleUser, Content: "Hello"}},
 		}
 
-		err := validateCompletionParams(params)
+		err := validateCompletionParams(params, providerName)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "model is required")
 	})
@@ -236,7 +436,7 @@ func TestValidateCompletionParams(t *testing.T) {
 			Messages: []providers.Message{},
 		}
 
-		err := validateCompletionParams(params)
+		err := validateCompletionParams(params, providerName)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "at least one message is required")
 	})
@@ -251,7 +451,7 @@ func TestValidateCompletionParams(t *testing.T) {
 			},
 		}
 
-		err := validateCompletionParams(params)
+		err := validateCompletionParams(params, providerName)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unknown message role")
 	})
@@ -266,7 +466,22 @@ func TestValidateCompletionParams(t *testing.T) {
 			},
 		}
 
-		err := validateCompletionParams(params)
+		err := validateCompletionParams(params, providerName)
+		require.NoError(t, err)
+	})
+
+	t.Run("leaves numeric ranges to the compatible API", func(t *testing.T) {
+		t.Parallel()
+
+		temperature := 3.0
+		params := providers.CompletionParams{
+			Model:       "provider-specific-model",
+			Messages:    []providers.Message{{Role: providers.RoleUser, Content: "Hello"}},
+			Temperature: &temperature,
+			Stop:        []string{"one", "two", "three", "four", "five"},
+		}
+
+		err := validateCompletionParams(params, providerName)
 		require.NoError(t, err)
 	})
 }
