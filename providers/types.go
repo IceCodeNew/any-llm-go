@@ -517,6 +517,8 @@ type Batch struct {
 type BatchStatus string
 
 const (
+	// BatchStatusCancelled through BatchStatusValidating are the lifecycle states
+	// returned by batch APIs.
 	BatchStatusCancelled  BatchStatus = "cancelled"
 	BatchStatusCancelling BatchStatus = "cancelling"
 	BatchStatusCompleted  BatchStatus = "completed"
