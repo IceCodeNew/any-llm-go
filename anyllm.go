@@ -26,6 +26,7 @@ import (
 // Message roles.
 const (
 	RoleAssistant = providers.RoleAssistant
+	RoleDeveloper = providers.RoleDeveloper
 	RoleSystem    = providers.RoleSystem
 	RoleTool      = providers.RoleTool
 	RoleUser      = providers.RoleUser
@@ -73,6 +74,7 @@ type (
 	ModerationProvider = providers.ModerationProvider
 	Provider           = providers.Provider
 	RerankProvider     = providers.RerankProvider
+	ResponsesProvider  = providers.ResponsesProvider
 )
 
 // Batch types.
@@ -101,6 +103,10 @@ type (
 	ModerationParams    = providers.ModerationParams
 	ModerationResponse  = providers.ModerationResponse
 	ModerationResult    = providers.ModerationResult
+	ResponsesInputItem  = providers.ResponsesInputItem
+	ResponsesOutputItem = providers.ResponsesOutputItem
+	ResponsesParams     = providers.ResponsesParams
+	ResponsesResult     = providers.ResponsesResult
 )
 
 // Message types.

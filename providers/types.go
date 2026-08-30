@@ -29,6 +29,7 @@ const (
 // Message roles.
 const (
 	RoleAssistant = "assistant"
+	RoleDeveloper = "developer"
 	RoleSystem    = "system"
 	RoleTool      = "tool"
 	RoleUser      = "user"
@@ -74,6 +75,13 @@ type RerankProvider interface {
 	Rerank(ctx context.Context, params RerankParams) (*RerankResponse, error)
 }
 
+// ResponsesProvider is an optional interface for providers that support the
+// OpenAI Responses API.
+type ResponsesProvider interface {
+	Provider
+	Responses(ctx context.Context, params ResponsesParams) (*ResponsesResult, error)
+}
+
 // Provider is the core interface that all LLM providers must implement.
 type Provider interface {
 	// Name returns the provider's identifier (e.g., "openai", "anthropic").
@@ -94,6 +102,8 @@ type ReasoningEffort string
 
 // Capabilities describes what features a provider supports.
 type Capabilities struct {
+	AudioSpeech         bool
+	AudioTranscription  bool
 	Batch               bool
 	Completion          bool
 	CompletionImage     bool
@@ -102,9 +112,13 @@ type Capabilities struct {
 	CompletionStreaming bool
 	CompletionTools     bool
 	Embedding           bool
+	Files               bool
+	ImageGeneration     bool
 	ListModels          bool
 	Moderation          bool
 	Rerank              bool
+	Responses           bool
+	ResponsesStreaming  bool
 }
 
 // ChatCompletion represents a chat completion response in OpenAI format.
@@ -145,18 +159,22 @@ type ChunkChoice struct {
 
 // ChunkDelta represents the delta content in a streaming chunk.
 type ChunkDelta struct {
+	// Extra holds provider-specific response metadata, keyed by provider name.
+	Extra     map[string]ProviderData `json:"extra_content,omitempty"`
 	Role      string                  `json:"role,omitempty"`
 	Content   string                  `json:"content,omitempty"`
 	ToolCalls []ToolCall              `json:"tool_calls,omitempty"`
 	Reasoning *Reasoning              `json:"reasoning,omitempty"`
-	Extra     map[string]ProviderData `json:"extra_content,omitempty"`
 }
 
 // CompletionParams represents normalized parameters for chat completion requests.
 type CompletionParams struct {
+	FrequencyPenalty  *float64        `json:"frequency_penalty,omitempty"`
+	LogitBias         map[string]int  `json:"logit_bias,omitempty"`
+	Logprobs          *bool           `json:"logprobs,omitempty"`
 	Model             string          `json:"model"`
 	Messages          []Message       `json:"messages"`
-	FrequencyPenalty  *float64        `json:"frequency_penalty,omitempty"`
+	N                 *int            `json:"n,omitempty"`
 	PresencePenalty   *float64        `json:"presence_penalty,omitempty"`
 	Temperature       *float64        `json:"temperature,omitempty"`
 	TopP              *float64        `json:"top_p,omitempty"`
@@ -171,6 +189,8 @@ type CompletionParams struct {
 	ReasoningEffort   ReasoningEffort `json:"reasoning_effort,omitempty"`
 	Seed              *int            `json:"seed,omitempty"`
 	ServiceTier       string          `json:"service_tier,omitempty"`
+	Store             *bool           `json:"store,omitempty"`
+	TopLogprobs       *int            `json:"top_logprobs,omitempty"`
 	User              string          `json:"user,omitempty"`
 	Extra             map[string]any  `json:"-"`
 }
@@ -261,6 +281,55 @@ type RerankParams struct {
 	User            string   `json:"user,omitempty"`
 }
 
+// ResponsesInputItem is a single Responses API input item.
+type ResponsesInputItem struct {
+	Content string `json:"content"`
+	Role    string `json:"role"`
+}
+
+// ResponsesParams represents normalized parameters for the OpenAI Responses API.
+type ResponsesParams struct {
+	Input        []ResponsesInputItem `json:"input"`
+	Instructions string               `json:"instructions,omitempty"`
+	MaxTokens    *int                 `json:"max_output_tokens,omitempty"`
+	Model        string               `json:"model"`
+	Reasoning    ReasoningEffort      `json:"reasoning_effort,omitempty"`
+}
+
+// ResponsesResult is a normalized Responses API result.
+//
+// Output is the concatenated assistant text (equivalent to the SDK's
+// OutputText). OutputItems exposes the structured output items so callers can
+// inspect function calls, reasoning summaries, and refusals that have no text
+// representation. Status reports the response generation status (e.g.
+// "completed", "incomplete", "failed") so a tool-call or reasoning-only turn
+// is distinguishable from an empty response. ProviderRaw contains the complete
+// provider response envelope for fields outside this portable surface.
+type ResponsesResult struct {
+	ID          string                `json:"id"`
+	Model       string                `json:"model"`
+	Status      string                `json:"status,omitempty"`
+	Output      string                `json:"output"`
+	OutputItems []ResponsesOutputItem `json:"output_items,omitempty"`
+	Usage       *Usage                `json:"usage,omitempty"`
+	ProviderRaw json.RawMessage       `json:"provider_raw,omitempty"`
+}
+
+// ResponsesOutputItem is a single structured item from a Responses API output.
+// Only fields relevant to the item Type are populated.
+type ResponsesOutputItem struct {
+	Type        string          `json:"type"`
+	ID          string          `json:"id,omitempty"`
+	Status      string          `json:"status,omitempty"`
+	Content     string          `json:"content,omitempty"`
+	Refusal     string          `json:"refusal,omitempty"`
+	Name        string          `json:"name,omitempty"`
+	CallID      string          `json:"call_id,omitempty"`
+	Arguments   string          `json:"arguments,omitempty"`
+	Summary     string          `json:"summary,omitempty"`
+	ProviderRaw json.RawMessage `json:"provider_raw,omitempty"`
+}
+
 // RerankResponse represents a rerank response.
 type RerankResponse struct {
 	ID      string         `json:"id"`
@@ -309,13 +378,14 @@ type JSONSchema struct {
 
 // Message represents a chat message in OpenAI format.
 type Message struct {
+	// Extra holds provider-specific response metadata, keyed by provider name.
+	Extra      map[string]ProviderData `json:"extra_content,omitempty"`
 	Role       string                  `json:"role"`
 	Content    any                     `json:"content"`
 	Name       string                  `json:"name,omitempty"`
 	ToolCalls  []ToolCall              `json:"tool_calls,omitempty"`
 	ToolCallID string                  `json:"tool_call_id,omitempty"`
 	Reasoning  *Reasoning              `json:"reasoning,omitempty"`
-	Extra      map[string]ProviderData `json:"extra_content,omitempty"`
 }
 
 // Model represents a model from the list models API.
@@ -358,7 +428,8 @@ type Tool struct {
 type ToolCall struct {
 	// Extra holds provider-specific metadata for round-tripping across
 	// multi-turn conversations. Keyed by provider name (e.g. "gemini").
-	Extra    map[string]ProviderData `json:"extra_content,omitempty"`
+	// Excluded from JSON; callers preserve this through their own storage.
+	Extra    map[string]ProviderData `json:"-"`
 	Function FunctionCall            `json:"function"`
 	ID       string                  `json:"id"`
 	Type     string                  `json:"type"`
@@ -381,7 +452,6 @@ type Usage struct {
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
-	CachedTokens     int `json:"cached_tokens,omitempty"`
 }
 
 // ContentParts extracts content parts from a message.
@@ -494,6 +564,7 @@ type BatchResult struct {
 type BatchResultItem struct {
 	CustomID string            `json:"custom_id"`
 	Error    *BatchResultError `json:"error,omitempty"`
+	Raw      json.RawMessage   `json:"raw,omitempty"`
 	Result   *ChatCompletion   `json:"result,omitempty"`
 }
 
