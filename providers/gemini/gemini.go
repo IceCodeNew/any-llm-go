@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -24,20 +23,14 @@ import (
 const (
 	envAPIKey       = "GEMINI_API_KEY"
 	envAPIKeyGoogle = "GOOGLE_API_KEY"
+	envBaseURL      = "GOOGLE_GEMINI_BASE_URL"
 	providerName    = "gemini"
-)
-
-// Default thinking budgets for reasoning effort levels.
-// These match the Python any-llm library.
-const (
-	thinkingBudgetHigh   int32 = 24576
-	thinkingBudgetLow    int32 = 1024
-	thinkingBudgetMedium int32 = 8192
 )
 
 // Content part types.
 const (
 	contentPartTypeImageURL = "image_url"
+	contentPartTypeFile     = "file"
 	contentPartTypeText     = "text"
 )
 
@@ -71,11 +64,25 @@ const (
 	idPrefixToolCall   = "call_"
 )
 
-// Extra key for round-tripping ThoughtSignature metadata in ToolCall.Extra.
-const extraKeyThoughtSignature = "thought_signature"
+// Extra keys for round-tripping provider metadata.
+const (
+	extraKeyResponseParts    = "response_parts"
+	extraKeyResponse         = "response"
+	extraKeyResponseEvents   = "response_events"
+	extraKeyThoughtSignature = "thought_signature"
+)
 
 // Default MIME type for image URLs when type cannot be determined.
 const defaultImageMIMEType = "image/jpeg"
+
+const (
+	defaultFileMIMEType = "application/octet-stream"
+	inlineSizeLimit     = 20 * 1024 * 1024
+)
+
+// NativeToolsExtraKey is the CompletionParams.Extra key for []*genai.Tool.
+// It intentionally exposes the official SDK types rather than duplicating them.
+const NativeToolsExtraKey = "gemini_native_tools"
 
 // Bypass value for tool calls that lack a real ThoughtSignature.
 // See https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
@@ -106,17 +113,6 @@ type Provider struct {
 	config *config.Config
 }
 
-// streamState tracks accumulated state during streaming.
-type streamState struct {
-	content      strings.Builder
-	finishReason genai.FinishReason
-	messageID    string
-	model        string
-	reasoning    strings.Builder
-	toolCalls    []providers.ToolCall
-	usage        *providers.Usage
-}
-
 // New creates a new Gemini provider.
 func New(opts ...config.Option) (*Provider, error) {
 	cfg, err := config.New(opts...)
@@ -132,11 +128,21 @@ func New(opts ...config.Option) (*Provider, error) {
 		return nil, errors.NewMissingAPIKeyError(providerName, envAPIKey)
 	}
 
-	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+	baseURL, err := cfg.ResolveBaseURL(envBaseURL, "")
+	if err != nil {
+		return nil, fmt.Errorf("resolving Gemini base URL: %w", err)
+	}
+
+	clientCfg := &genai.ClientConfig{
 		APIKey:     apiKey,
 		Backend:    genai.BackendGeminiAPI,
 		HTTPClient: cfg.HTTPClient(),
-	})
+	}
+	if baseURL != "" {
+		clientCfg.HTTPOptions.BaseURL = baseURL
+	}
+
+	client, err := genai.NewClient(context.Background(), clientCfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating Gemini client: %w", err)
 	}
@@ -150,9 +156,10 @@ func New(opts ...config.Option) (*Provider, error) {
 // Capabilities returns the provider's capabilities.
 func (p *Provider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{
+		Batch:               true,
 		Completion:          true,
 		CompletionImage:     true,
-		CompletionPDF:       false,
+		CompletionPDF:       true,
 		CompletionReasoning: true,
 		CompletionStreaming: true,
 		CompletionTools:     true,
@@ -166,7 +173,10 @@ func (p *Provider) Completion(
 	ctx context.Context,
 	params providers.CompletionParams,
 ) (*providers.ChatCompletion, error) {
-	contents, cfg := p.convertParams(params)
+	contents, cfg, err := p.convertParams(params)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := p.client.Models.GenerateContent(ctx, params.Model, contents, cfg)
 	if err != nil {
@@ -188,53 +198,73 @@ func (p *Provider) CompletionStream(
 		defer close(chunks)
 		defer close(errs)
 
-		contents, cfg := p.convertParams(params)
+		contents, cfg, err := p.convertParams(params)
+		if err != nil {
+			reportStreamError(errs, err)
+			return
+		}
 		state, err := newStreamState(params.Model)
 		if err != nil {
-			select {
-			case errs <- err:
-			case <-ctx.Done():
-			}
+			reportStreamError(errs, err)
 			return
 		}
 
 		for resp, err := range p.client.Models.GenerateContentStream(ctx, params.Model, contents, cfg) {
 			if err != nil {
-				select {
-				case errs <- p.ConvertError(err):
-				case <-ctx.Done():
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					reportStreamError(errs, ctxErr)
+				} else {
+					reportStreamError(errs, p.ConvertError(err))
 				}
 				return
 			}
 
 			responseChunks, err := state.processResponse(resp)
 			if err != nil {
-				select {
-				case errs <- err:
-				case <-ctx.Done():
-				}
+				reportStreamError(errs, err)
 				return
 			}
 
 			for _, chunk := range responseChunks {
-				select {
-				case chunks <- chunk:
-				case <-ctx.Done():
+				if !sendStreamChunk(ctx, chunks, errs, chunk) {
 					return
 				}
 			}
 		}
+		if err := ctx.Err(); err != nil {
+			reportStreamError(errs, err)
+			return
+		}
 
 		// Emit final chunk with finish reason and usage.
 		if finalChunk := state.finalChunk(); finalChunk != nil {
-			select {
-			case chunks <- *finalChunk:
-			case <-ctx.Done():
-			}
+			sendStreamChunk(ctx, chunks, errs, *finalChunk)
 		}
 	}()
 
 	return chunks, errs
+}
+
+func reportStreamError(errs chan<- error, err error) {
+	select {
+	case errs <- err:
+	default:
+	}
+}
+
+func sendStreamChunk(
+	ctx context.Context,
+	chunks chan<- providers.ChatCompletionChunk,
+	errs chan<- error,
+	chunk providers.ChatCompletionChunk,
+) bool {
+	select {
+	case chunks <- chunk:
+		return true
+	case <-ctx.Done():
+		reportStreamError(errs, ctx.Err())
+		return false
+	}
 }
 
 // ConvertError converts a Gemini SDK error to a unified error type.
@@ -276,9 +306,20 @@ func (p *Provider) Embedding(
 	ctx context.Context,
 	params providers.EmbeddingParams,
 ) (*providers.EmbeddingResponse, error) {
-	content := convertEmbeddingInput(params.Input)
+	contents, err := convertEmbeddingInputs(params.Input)
+	if err != nil {
+		return nil, err
+	}
+	var cfg *genai.EmbedContentConfig
+	if params.Dimensions != nil {
+		dimensions, conversionErr := positiveInt32(*params.Dimensions, "dimensions")
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
+		cfg = &genai.EmbedContentConfig{OutputDimensionality: new(dimensions)}
+	}
 
-	resp, err := p.client.Models.EmbedContent(ctx, params.Model, []*genai.Content{content}, nil)
+	resp, err := p.client.Models.EmbedContent(ctx, params.Model, contents, cfg)
 	if err != nil {
 		return nil, p.ConvertError(err)
 	}
@@ -346,362 +387,164 @@ func (p *Provider) Name() string {
 }
 
 // convertParams converts providers.CompletionParams to Gemini request format.
-func (p *Provider) convertParams(params providers.CompletionParams) ([]*genai.Content, *genai.GenerateContentConfig) {
-	contents, systemInstruction := convertMessages(params.Messages)
+func (p *Provider) convertParams(
+	params providers.CompletionParams,
+) ([]*genai.Content, *genai.GenerateContentConfig, error) {
+	if err := validateCompletionParams(params); err != nil {
+		return nil, nil, err
+	}
+	contents, systemInstruction, err := convertMessages(params.Messages)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	cfg := &genai.GenerateContentConfig{}
-
-	if systemInstruction != nil {
-		cfg.SystemInstruction = systemInstruction
+	if err := applyGenerationParams(cfg, systemInstruction, params); err != nil {
+		return nil, nil, err
+	}
+	if err := applyCompletionTools(cfg, params); err != nil {
+		return nil, nil, err
+	}
+	if err := applyThinking(cfg, params.Model, params.ReasoningEffort); err != nil {
+		return nil, nil, err
+	}
+	if params.ResponseFormat != nil {
+		if err := applyResponseFormat(cfg, params.ResponseFormat); err != nil {
+			return nil, nil, err
+		}
+	}
+	if hasThoughtSignatureBypass(contents) {
+		cfg.HTTPOptions = &genai.HTTPOptions{ExtrasRequestProvider: rewriteThoughtSignatureBypass}
 	}
 
-	if params.Temperature != nil {
-		t := float32(*params.Temperature)
-		cfg.Temperature = &t
-	}
+	return contents, cfg, nil
+}
 
-	if params.TopP != nil {
-		tp := float32(*params.TopP)
-		cfg.TopP = &tp
+func validateCompletionParams(params providers.CompletionParams) error {
+	if params.Model == "" {
+		return errors.NewInvalidRequestError(providerName, fmt.Errorf("model is required"))
 	}
-
-	if params.MaxTokens != nil {
-		cfg.MaxOutputTokens = int32(*params.MaxTokens)
+	if len(params.Messages) == 0 {
+		return errors.NewInvalidRequestError(providerName, fmt.Errorf("messages are required"))
 	}
-
-	if len(params.Stop) > 0 {
-		cfg.StopSequences = params.Stop
+	if params.ParallelToolCalls != nil {
+		return errors.NewUnsupportedParamError(providerName, "parallel_tool_calls")
 	}
+	if err := validateMessages(params.Messages); err != nil {
+		return err
+	}
+	return nil
+}
 
+func applyCompletionTools(cfg *genai.GenerateContentConfig, params providers.CompletionParams) error {
 	if len(params.Tools) > 0 {
 		cfg.Tools = convertTools(params.Tools)
 	}
+	if native, ok := params.Extra[NativeToolsExtraKey]; ok {
+		nativeTools, ok := native.([]*genai.Tool)
+		if !ok {
+			return errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("%s must be []*genai.Tool", NativeToolsExtraKey),
+			)
+		}
+		cfg.Tools = append(cfg.Tools, nativeTools...)
+	}
 
 	if params.ToolChoice != nil {
-		cfg.ToolConfig = convertToolChoice(params.ToolChoice)
-	}
-
-	applyThinking(cfg, params.ReasoningEffort)
-
-	if params.ResponseFormat != nil {
-		applyResponseFormat(cfg, params.ResponseFormat)
-	}
-
-	return contents, cfg
-}
-
-// newStreamState creates a new stream state.
-func newStreamState(model string) (*streamState, error) {
-	id, err := generateID(idPrefixCompletion)
-	if err != nil {
-		return nil, err
-	}
-	return &streamState{
-		messageID: id,
-		model:     model,
-	}, nil
-}
-
-// chunk creates a ChatCompletionChunk with the given delta.
-func (s *streamState) chunk(delta providers.ChunkDelta) providers.ChatCompletionChunk {
-	return providers.ChatCompletionChunk{
-		ID:     s.messageID,
-		Object: objectChatCompletionChunk,
-		Model:  s.model,
-		Choices: []providers.ChunkChoice{{
-			Index: 0,
-			Delta: delta,
-		}},
-	}
-}
-
-// finalChunk returns the final chunk with finish reason and usage.
-func (s *streamState) finalChunk() *providers.ChatCompletionChunk {
-	chunk := s.chunk(providers.ChunkDelta{})
-
-	finishReason := convertFinishReason(s.finishReason)
-	if len(s.toolCalls) > 0 && finishReason == providers.FinishReasonStop {
-		finishReason = providers.FinishReasonToolCalls
-	}
-
-	chunk.Choices[0].FinishReason = finishReason
-	chunk.Usage = s.usage
-	return &chunk
-}
-
-// processResponse processes a streaming response and returns chunks to emit.
-func (s *streamState) processResponse(resp *genai.GenerateContentResponse) ([]providers.ChatCompletionChunk, error) {
-	var result []providers.ChatCompletionChunk
-
-	if resp.UsageMetadata != nil {
-		s.usage = &providers.Usage{
-			PromptTokens:     int(resp.UsageMetadata.PromptTokenCount),
-			CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount),
-			TotalTokens:      int(resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount),
-			ReasoningTokens:  int(resp.UsageMetadata.ThoughtsTokenCount),
+		var err error
+		cfg.ToolConfig, err = convertToolChoice(params.ToolChoice)
+		if err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	if len(resp.Candidates) == 0 {
-		return result, nil
+func applyGenerationParams(
+	cfg *genai.GenerateContentConfig,
+	systemInstruction *genai.Content,
+	params providers.CompletionParams,
+) error {
+	cfg.SystemInstruction = systemInstruction
+	applySamplingParams(cfg, params)
+
+	if params.MaxTokens != nil {
+		maxTokens, err := positiveInt32(*params.MaxTokens, "max_tokens")
+		if err != nil {
+			return err
+		}
+		cfg.MaxOutputTokens = maxTokens
 	}
-
-	candidate := resp.Candidates[0]
-
-	if candidate.FinishReason != "" {
-		s.finishReason = candidate.FinishReason
+	if params.Seed != nil {
+		seed, err := int32Value(*params.Seed, "seed")
+		if err != nil {
+			return err
+		}
+		cfg.Seed = new(seed)
 	}
-
-	if candidate.Content == nil {
-		return result, nil
-	}
-
-	for _, part := range candidate.Content.Parts {
-		switch {
-		case part.FunctionCall != nil:
-			toolCall, err := convertFunctionCallToToolCall(part.FunctionCall)
-			if err != nil {
-				return nil, err
-			}
-
-			// Preserve the thought signature so callers can echo it back on the next turn.
-			if len(part.ThoughtSignature) > 0 {
-				setProviderExtra(&toolCall, providerName, extraKeyThoughtSignature,
-					base64.StdEncoding.EncodeToString(part.ThoughtSignature))
-			}
-			s.toolCalls = append(s.toolCalls, toolCall)
-			result = append(result, s.chunk(providers.ChunkDelta{
-				ToolCalls: []providers.ToolCall{toolCall},
-			}))
-		case part.Thought:
-			s.reasoning.WriteString(part.Text)
-			result = append(result, s.chunk(providers.ChunkDelta{
-				Reasoning: &providers.Reasoning{Content: part.Text},
-			}))
-		case part.Text != "":
-			s.content.WriteString(part.Text)
-			result = append(result, s.chunk(providers.ChunkDelta{
-				Content: part.Text,
-			}))
+	if params.ServiceTier != "" {
+		if err := applyServiceTier(cfg, params.ServiceTier); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	return result, nil
+func applySamplingParams(cfg *genai.GenerateContentConfig, params providers.CompletionParams) {
+	if params.Temperature != nil {
+		cfg.Temperature = new(float32(*params.Temperature))
+	}
+	if params.TopP != nil {
+		cfg.TopP = new(float32(*params.TopP))
+	}
+	if params.FrequencyPenalty != nil {
+		cfg.FrequencyPenalty = new(float32(*params.FrequencyPenalty))
+	}
+	if params.PresencePenalty != nil {
+		cfg.PresencePenalty = new(float32(*params.PresencePenalty))
+	}
+	if len(params.Stop) > 0 {
+		cfg.StopSequences = params.Stop
+	}
+}
+
+func applyServiceTier(cfg *genai.GenerateContentConfig, serviceTier string) error {
+	switch serviceTier {
+	case string(genai.ServiceTierFlex), string(genai.ServiceTierStandard), string(genai.ServiceTierPriority):
+		cfg.ServiceTier = genai.ServiceTier(serviceTier)
+		return nil
+	default:
+		return errors.NewInvalidRequestError(
+			providerName,
+			fmt.Errorf("unsupported service_tier %q", serviceTier),
+		)
+	}
 }
 
 // applyResponseFormat configures the response format on the config.
 // For json_schema, Gemini requires both responseMimeType application/json and
 // responseJsonSchema (see https://ai.google.dev/gemini-api/docs/structured-output).
-func applyResponseFormat(cfg *genai.GenerateContentConfig, format *providers.ResponseFormat) {
+func applyResponseFormat(cfg *genai.GenerateContentConfig, format *providers.ResponseFormat) error {
 	if format == nil {
-		return
+		return nil
 	}
 	switch format.Type {
 	case responseFormatJSONSchema:
 		if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
-			return
+			return errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("json_schema response format requires a schema"),
+			)
 		}
 		cfg.ResponseMIMEType = responseMIMETypeJSON
 		cfg.ResponseJsonSchema = format.JSONSchema.Schema
 	case responseFormatJSON:
 		cfg.ResponseMIMEType = responseMIMETypeJSON
-	}
-}
-
-// applyThinking configures thinking/reasoning on the config if applicable.
-func applyThinking(cfg *genai.GenerateContentConfig, effort providers.ReasoningEffort) {
-	if effort == "" || effort == providers.ReasoningEffortNone {
-		return
-	}
-
-	budget, ok := thinkingBudget(effort)
-	if !ok {
-		return
-	}
-
-	cfg.ThinkingConfig = &genai.ThinkingConfig{
-		IncludeThoughts: true,
-		ThinkingBudget:  &budget,
-	}
-}
-
-// convertAssistantMessage converts an assistant message to Gemini format.
-func convertAssistantMessage(msg providers.Message) *genai.Content {
-	var parts []*genai.Part
-
-	text := msg.ContentString()
-	if text != "" {
-		parts = append(parts, &genai.Part{Text: text})
-	}
-
-	for _, tc := range msg.ToolCalls {
-		var args map[string]any
-		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-
-		part := genai.NewPartFromFunctionCall(tc.Function.Name, args)
-
-		// Replay the thought signature that Gemini returned on the original turn.
-		// Thinking models (2.5+) require this on every function call part when
-		// replaying conversation history; omitting it causes a 400 error.
-		// If no real signature was captured, use the documented bypass value.
-		//
-		// This applies unconditionally to all models, including non-thinking
-		// ones. In testing, non-thinking models accept the field without issue.
-		// The Python any-llm library follows the same pattern, so we mirror it
-		// here. Revisit if this causes problems with specific models.
-		//
-		// NOTE: The Go SDK declares Part.ThoughtSignature as []byte, and Go's
-		// encoding/json automatically base64-encodes []byte fields — so the
-		// bypass reaches the API as "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="
-		// rather than the literal string. In testing the API appears to accept
-		// the base64-encoded form transparently, but this behaviour is
-		// undocumented and the wire format differs from what the docs describe.
-		// The Python SDK uses str, avoiding this entirely.
-		//
-		// Upstream issue: https://github.com/googleapis/go-genai/issues/711
-		// See also: https://github.com/langchain-ai/langchain-google/issues/1570
-		if sig := thoughtSignatureFromExtra(tc.Extra); sig != nil {
-			part.ThoughtSignature = sig
-		} else {
-			part.ThoughtSignature = []byte(thoughtSignatureBypass)
-		}
-
-		parts = append(parts, part)
-	}
-
-	if len(parts) == 0 {
-		return nil
-	}
-
-	return &genai.Content{
-		Role:  roleModel,
-		Parts: parts,
-	}
-}
-
-// convertEmbeddingInput converts embedding input to Gemini content.
-func convertEmbeddingInput(input any) *genai.Content {
-	switch v := input.(type) {
-	case string:
-		return genai.NewContentFromText(v, roleUser)
-	case []string:
-		parts := make([]*genai.Part, len(v))
-		for i, s := range v {
-			parts[i] = genai.NewPartFromText(s)
-		}
-		return genai.NewContentFromParts(parts, roleUser)
 	default:
-		return genai.NewContentFromText(fmt.Sprintf("%v", v), roleUser)
+		return errors.NewInvalidRequestError(providerName, fmt.Errorf("unsupported response format %q", format.Type))
 	}
-}
-
-// convertFinishReason converts a Gemini finish reason to OpenAI format.
-func convertFinishReason(reason genai.FinishReason) string {
-	switch reason {
-	case genai.FinishReasonStop:
-		return providers.FinishReasonStop
-	case genai.FinishReasonMaxTokens:
-		return providers.FinishReasonLength
-	case genai.FinishReasonSafety, genai.FinishReasonBlocklist, genai.FinishReasonProhibitedContent:
-		return providers.FinishReasonContentFilter
-	case genai.FinishReasonRecitation:
-		return providers.FinishReasonStop
-	default:
-		return providers.FinishReasonStop
-	}
-}
-
-// convertFunctionCallToToolCall converts a Gemini function call to a providers tool call.
-func convertFunctionCallToToolCall(fc *genai.FunctionCall) (providers.ToolCall, error) {
-	argsJSON := ""
-	if fc.Args != nil {
-		if b, err := json.Marshal(fc.Args); err == nil {
-			argsJSON = string(b)
-		}
-	}
-
-	id, err := generateID(idPrefixToolCall)
-	if err != nil {
-		return providers.ToolCall{}, err
-	}
-
-	return providers.ToolCall{
-		ID:   id,
-		Type: toolCallType,
-		Function: providers.FunctionCall{
-			Name:      fc.Name,
-			Arguments: argsJSON,
-		},
-	}, nil
-}
-
-// convertImagePart converts an image URL to Gemini part format.
-// For data URLs, it extracts the base64-encoded data and MIME type.
-// For regular URLs, it treats them as file URIs with a default MIME type.
-func convertImagePart(img *providers.ImageURL) *genai.Part {
-	url := img.URL
-
-	if strings.HasPrefix(url, "data:") {
-		parts := strings.SplitN(url, ",", 2)
-		if len(parts) == 2 {
-			mediaTypePart := strings.TrimPrefix(parts[0], "data:")
-			mediaType := strings.Split(mediaTypePart, ";")[0]
-			data, err := base64.StdEncoding.DecodeString(parts[1])
-			if err == nil {
-				return genai.NewPartFromBytes(data, mediaType)
-			}
-			// Base64 decoding failed for data URL; fall through to treat as file URI.
-			// This handles malformed data URLs gracefully.
-		}
-	}
-
-	return &genai.Part{
-		FileData: &genai.FileData{
-			FileURI:  url,
-			MIMEType: defaultImageMIMEType,
-		},
-	}
-}
-
-// convertMessage converts a single message to Gemini format.
-// Returns nil for unknown roles (with a warning logged).
-func convertMessage(msg providers.Message) *genai.Content {
-	switch msg.Role {
-	case providers.RoleUser:
-		return convertUserMessage(msg)
-	case providers.RoleAssistant:
-		return convertAssistantMessage(msg)
-	case providers.RoleTool:
-		return convertToolMessage(msg)
-	default:
-		log.Printf("gemini: unknown message role %q, skipping message", msg.Role)
-		return nil
-	}
-}
-
-// convertMessages converts providers messages to Gemini format.
-// Returns the contents and the system instruction (if any).
-func convertMessages(messages []providers.Message) ([]*genai.Content, *genai.Content) {
-	var contents []*genai.Content
-	var systemParts []string
-
-	for _, msg := range messages {
-		if msg.Role == providers.RoleSystem {
-			systemParts = append(systemParts, msg.ContentString())
-			continue
-		}
-
-		if converted := convertMessage(msg); converted != nil {
-			contents = append(contents, converted)
-		}
-	}
-
-	var systemInstruction *genai.Content
-	if len(systemParts) > 0 {
-		systemInstruction = genai.NewContentFromText(strings.Join(systemParts, "\n"), roleUser)
-	}
-
-	return contents, systemInstruction
+	return nil
 }
 
 // extractResponseContent extracts content, reasoning, tool calls, and finish reason from a Gemini response.
@@ -709,6 +552,9 @@ func extractResponseContent(
 	resp *genai.GenerateContentResponse,
 ) (string, *providers.Reasoning, []providers.ToolCall, string, error) {
 	if len(resp.Candidates) == 0 {
+		if promptWasBlocked(resp) {
+			return "", nil, nil, providers.FinishReasonContentFilter, nil
+		}
 		return "", nil, nil, "", nil
 	}
 
@@ -722,6 +568,7 @@ func extractResponseContent(
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	var toolCalls []providers.ToolCall
+	hasReasoning := false
 
 	for _, part := range candidate.Content.Parts {
 		switch {
@@ -738,6 +585,7 @@ func extractResponseContent(
 			}
 			toolCalls = append(toolCalls, toolCall)
 		case part.Thought:
+			hasReasoning = true
 			reasoningBuilder.WriteString(part.Text)
 		case part.Text != "":
 			contentBuilder.WriteString(part.Text)
@@ -745,7 +593,7 @@ func extractResponseContent(
 	}
 
 	var reasoning *providers.Reasoning
-	if reasoningBuilder.Len() > 0 {
+	if hasReasoning {
 		reasoning = &providers.Reasoning{Content: reasoningBuilder.String()}
 	}
 
@@ -762,12 +610,17 @@ func convertResponse(resp *genai.GenerateContentResponse, model string) (*provid
 	if len(toolCalls) > 0 && finishReason == providers.FinishReasonStop {
 		finishReason = providers.FinishReasonToolCalls
 	}
+	extra, err := responseExtra(resp)
+	if err != nil {
+		return nil, err
+	}
 
 	message := providers.Message{
 		Role:      providers.RoleAssistant,
 		Content:   content,
 		ToolCalls: toolCalls,
 		Reasoning: reasoning,
+		Extra:     extra,
 	}
 
 	id, err := generateID(idPrefixCompletion)
@@ -791,117 +644,117 @@ func convertResponse(resp *genai.GenerateContentResponse, model string) (*provid
 		completion.Usage = &providers.Usage{
 			PromptTokens:     int(resp.UsageMetadata.PromptTokenCount),
 			CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount),
-			TotalTokens:      int(resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:      usageTotal(resp),
 			ReasoningTokens:  int(resp.UsageMetadata.ThoughtsTokenCount),
+			CachedTokens:     int(resp.UsageMetadata.CachedContentTokenCount),
 		}
 	}
 
 	return completion, nil
 }
 
-// convertToolChoice converts providers tool choice to Gemini format.
-func convertToolChoice(choice any) *genai.ToolConfig {
-	switch v := choice.(type) {
-	case string:
-		switch v {
-		case "auto":
-			return &genai.ToolConfig{
-				FunctionCallingConfig: &genai.FunctionCallingConfig{
-					Mode: genai.FunctionCallingConfigModeAuto,
-				},
-			}
-		case "none":
-			return &genai.ToolConfig{
-				FunctionCallingConfig: &genai.FunctionCallingConfig{
-					Mode: genai.FunctionCallingConfigModeNone,
-				},
-			}
-		case "required", "any":
-			return &genai.ToolConfig{
-				FunctionCallingConfig: &genai.FunctionCallingConfig{
-					Mode: genai.FunctionCallingConfigModeAny,
-				},
-			}
-		}
-	case providers.ToolChoice:
-		if v.Function != nil {
-			return &genai.ToolConfig{
-				FunctionCallingConfig: &genai.FunctionCallingConfig{
-					Mode:                 genai.FunctionCallingConfigModeAny,
-					AllowedFunctionNames: []string{v.Function.Name},
-				},
+func usageTotal(resp *genai.GenerateContentResponse) int {
+	usage := resp.UsageMetadata
+	if rawTotal, ok := rawGeminiTotalTokenCount(resp); ok {
+		return rawTotal
+	}
+	if usage.TotalTokenCount != 0 {
+		return int(usage.TotalTokenCount)
+	}
+	return int(usage.PromptTokenCount + usage.CandidatesTokenCount)
+}
+
+func rawGeminiTotalTokenCount(resp *genai.GenerateContentResponse) (int, bool) {
+	if resp.SDKHTTPResponse == nil || !json.Valid([]byte(resp.SDKHTTPResponse.Body)) {
+		return 0, false
+	}
+	var envelope struct {
+		UsageMetadata *struct {
+			TotalTokenCount *int32 `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal([]byte(resp.SDKHTTPResponse.Body), &envelope); err != nil ||
+		envelope.UsageMetadata == nil || envelope.UsageMetadata.TotalTokenCount == nil {
+		return 0, false
+	}
+	return int(*envelope.UsageMetadata.TotalTokenCount), true
+}
+
+func responseTextExtra(resp *genai.GenerateContentResponse) map[string]providers.ProviderData {
+	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return nil
+	}
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if !part.Thought {
+			if extra := thoughtSignatureExtra(part); extra != nil {
+				return extra
 			}
 		}
 	}
-
 	return nil
 }
 
-// convertToolMessage converts a tool result message to Gemini format.
-func convertToolMessage(msg providers.Message) *genai.Content {
-	name := msg.Name
-	if name == "" {
-		name = toolCallFallbackName
+func responseExtra(resp *genai.GenerateContentResponse) (map[string]providers.ProviderData, error) {
+	extra := responseTextExtra(resp)
+	rawResponse, err := rawGeminiResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+	extra = withGeminiExtra(extra, extraKeyResponse, rawResponse)
+	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return extra, nil
 	}
 
-	content := msg.ContentString()
-
-	// Try to parse content as JSON first (structured tool responses).
-	// If parsing fails, wrap the raw content as {"result": content}.
-	var response map[string]any
-	if err := json.Unmarshal([]byte(content), &response); err != nil {
-		response = map[string]any{
-			"result": content,
-		}
+	// Gemini requires callers to replay model parts in their original order, including
+	// thought signatures and server tool data that normalized fields cannot represent.
+	// https://ai.google.dev/gemini-api/docs/thought-signatures
+	parts := resp.Candidates[0].Content.Parts
+	raw, err := json.Marshal(parts)
+	if err != nil {
+		return nil, fmt.Errorf("serializing Gemini response parts: %w", err)
 	}
-
-	return &genai.Content{
-		Role:  roleUser,
-		Parts: []*genai.Part{genai.NewPartFromFunctionResponse(name, response)},
-	}
+	return withResponseParts(extra, raw), nil
 }
 
-// convertTools converts providers tools to Gemini format.
-func convertTools(tools []providers.Tool) []*genai.Tool {
-	declarations := make([]*genai.FunctionDeclaration, 0, len(tools))
-
-	for _, tool := range tools {
-		decl := &genai.FunctionDeclaration{
-			Name:        tool.Function.Name,
-			Description: tool.Function.Description,
-		}
-
-		if tool.Function.Parameters != nil {
-			decl.ParametersJsonSchema = tool.Function.Parameters
-		}
-
-		declarations = append(declarations, decl)
-	}
-
-	return []*genai.Tool{{
-		FunctionDeclarations: declarations,
-	}}
+func withResponseParts(
+	extra map[string]providers.ProviderData,
+	raw json.RawMessage,
+) map[string]providers.ProviderData {
+	return withGeminiExtra(extra, extraKeyResponseParts, raw)
 }
 
-// convertUserMessage converts a user message to Gemini format.
-func convertUserMessage(msg providers.Message) *genai.Content {
-	if !msg.IsMultiModal() {
-		return genai.NewContentFromText(msg.ContentString(), roleUser)
+func withGeminiExtra(
+	extra map[string]providers.ProviderData,
+	key string,
+	value any,
+) map[string]providers.ProviderData {
+	if extra == nil {
+		extra = make(map[string]providers.ProviderData)
 	}
-
-	var parts []*genai.Part
-	for _, part := range msg.ContentParts() {
-		switch part.Type {
-		case contentPartTypeText:
-			parts = append(parts, genai.NewPartFromText(part.Text))
-		case contentPartTypeImageURL:
-			if part.ImageURL != nil {
-				parts = append(parts, convertImagePart(part.ImageURL))
-			}
-		}
+	if extra[providerName] == nil {
+		extra[providerName] = make(providers.ProviderData)
 	}
+	extra[providerName][key] = value
+	return extra
+}
 
-	return genai.NewContentFromParts(parts, roleUser)
+func rawGeminiResponse(resp *genai.GenerateContentResponse) (json.RawMessage, error) {
+	// Google exposes the processed response body through SDKHTTPResponse. Prefer it
+	// because generated SDK structs use omitempty and cannot retain the presence of
+	// explicit false, zero, or empty metadata fields.
+	// https://pkg.go.dev/google.golang.org/genai#GenerateContentResponse
+	if resp.SDKHTTPResponse != nil && json.Valid([]byte(resp.SDKHTTPResponse.Body)) {
+		return json.RawMessage(resp.SDKHTTPResponse.Body), nil
+	}
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("serializing Gemini response metadata: %w", err)
+	}
+	return raw, nil
+}
+
+func promptWasBlocked(resp *genai.GenerateContentResponse) bool {
+	return resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != genai.BlockedReasonUnspecified
 }
 
 // generateID generates a random ID with the given prefix.
@@ -928,39 +781,3 @@ func setProviderExtra(tc *providers.ToolCall, provider string, key string, value
 
 // thoughtSignatureFromExtra extracts and base64-decodes a ThoughtSignature
 // from ToolCall Extra data. Returns nil if not present or invalid.
-func thoughtSignatureFromExtra(extra map[string]providers.ProviderData) []byte {
-	if extra == nil {
-		return nil
-	}
-
-	geminiData, ok := extra[providerName]
-	if !ok {
-		return nil
-	}
-
-	sigStr, ok := geminiData[extraKeyThoughtSignature].(string)
-	if !ok {
-		return nil
-	}
-
-	sig, err := base64.StdEncoding.DecodeString(sigStr)
-	if err != nil {
-		return nil
-	}
-
-	return sig
-}
-
-// thinkingBudget returns the token budget for the given reasoning effort.
-func thinkingBudget(effort providers.ReasoningEffort) (int32, bool) {
-	switch effort {
-	case providers.ReasoningEffortLow:
-		return thinkingBudgetLow, true
-	case providers.ReasoningEffortMedium:
-		return thinkingBudgetMedium, true
-	case providers.ReasoningEffortHigh:
-		return thinkingBudgetHigh, true
-	default:
-		return 0, false
-	}
-}
