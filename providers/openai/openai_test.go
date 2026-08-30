@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mozilla-ai/any-llm-go/config"
@@ -28,6 +28,15 @@ func TestNew(t *testing.T) {
 
 	t.Run("creates provider from environment variable", func(t *testing.T) {
 		t.Setenv("OPENAI_API_KEY", "env-api-key")
+
+		provider, err := New()
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+	})
+
+	t.Run("reads OPENAI_BASE_URL", func(t *testing.T) {
+		t.Setenv("OPENAI_API_KEY", "env-api-key")
+		t.Setenv("OPENAI_BASE_URL", "https://example.openai.invalid/v1")
 
 		provider, err := New()
 		require.NoError(t, err)
@@ -58,11 +67,20 @@ func TestCapabilities(t *testing.T) {
 
 	require.True(t, caps.Completion)
 	require.True(t, caps.CompletionImage)
+	require.False(t, caps.CompletionPDF)
 	require.True(t, caps.CompletionReasoning)
 	require.True(t, caps.CompletionStreaming)
 	require.True(t, caps.CompletionTools)
 	require.True(t, caps.Embedding)
 	require.True(t, caps.ListModels)
+	require.True(t, caps.Moderation)
+	require.True(t, caps.Responses)
+	require.True(t, caps.ResponsesStreaming)
+	require.True(t, caps.ImageGeneration)
+	require.True(t, caps.AudioTranscription)
+	require.True(t, caps.AudioSpeech)
+	require.True(t, caps.Batch)
+	require.True(t, caps.Files)
 }
 
 func TestConvertParams(t *testing.T) {
@@ -77,7 +95,7 @@ func TestConvertParams(t *testing.T) {
 			},
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.Equal(t, "gpt-4", string(req.Model))
 		require.Len(t, req.Messages, 1)
@@ -95,7 +113,7 @@ func TestConvertParams(t *testing.T) {
 			TopP:        &topP,
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.Equal(t, 0.7, req.Temperature.Value)
 		require.Equal(t, 0.9, req.TopP.Value)
@@ -111,7 +129,7 @@ func TestConvertParams(t *testing.T) {
 			MaxTokens: &maxTokens,
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.Equal(t, int64(100), req.MaxCompletionTokens.Value)
 	})
@@ -125,7 +143,7 @@ func TestConvertParams(t *testing.T) {
 			Stop:     []string{"END", "STOP"},
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.NotNil(t, req.Stop)
 	})
@@ -139,7 +157,7 @@ func TestConvertParams(t *testing.T) {
 			Tools:    []providers.Tool{testutil.WeatherTool()},
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.Len(t, req.Tools, 1)
 	})
@@ -154,7 +172,7 @@ func TestConvertParams(t *testing.T) {
 			ToolChoice: "auto",
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.NotNil(t, req.ToolChoice)
 	})
@@ -169,7 +187,7 @@ func TestConvertParams(t *testing.T) {
 			ToolChoice: "required",
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.NotNil(t, req.ToolChoice)
 	})
@@ -187,7 +205,7 @@ func TestConvertParams(t *testing.T) {
 			},
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.NotNil(t, req.ToolChoice)
 	})
@@ -203,23 +221,62 @@ func TestConvertParams(t *testing.T) {
 			},
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.NotNil(t, req.ResponseFormat)
 	})
 
-	t.Run("converts reasoning_effort", func(t *testing.T) {
+	const gpt56Model = "gpt-5.6"
+
+	for _, testCase := range []struct {
+		model  string
+		effort providers.ReasoningEffort
+	}{
+		{model: gpt56Model, effort: providers.ReasoningEffortNone},
+		{model: gpt56Model, effort: providers.ReasoningEffortLow},
+		{model: gpt56Model, effort: providers.ReasoningEffortMedium},
+		{model: gpt56Model, effort: providers.ReasoningEffortHigh},
+		{model: gpt56Model, effort: providers.ReasoningEffortXHigh},
+		{model: gpt56Model, effort: providers.ReasoningEffortMax},
+		{model: "other-model", effort: providers.ReasoningEffortMinimal},
+	} {
+		t.Run("converts reasoning_effort "+string(testCase.effort), func(t *testing.T) {
+			t.Parallel()
+
+			params := providers.CompletionParams{
+				Model:           testCase.model,
+				Messages:        testutil.SimpleMessages(),
+				ReasoningEffort: testCase.effort,
+			}
+
+			req := convertParams(params, providerName)
+			require.Equal(t, string(testCase.effort), string(req.ReasoningEffort))
+
+			body, err := json.Marshal(req)
+			require.NoError(t, err)
+
+			var payload map[string]any
+			require.NoError(t, json.Unmarshal(body, &payload))
+			require.Equal(t, string(testCase.effort), payload["reasoning_effort"])
+		})
+	}
+
+	t.Run("omits automatic reasoning effort", func(t *testing.T) {
 		t.Parallel()
 
 		params := providers.CompletionParams{
-			Model:           "o1-mini",
+			Model:           gpt56Model,
 			Messages:        testutil.SimpleMessages(),
-			ReasoningEffort: providers.ReasoningEffortHigh,
+			ReasoningEffort: providers.ReasoningEffortAuto,
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
+		body, err := json.Marshal(req)
+		require.NoError(t, err)
 
-		require.NotNil(t, req.ReasoningEffort)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(body, &payload))
+		require.NotContains(t, payload, "reasoning_effort")
 	})
 
 	t.Run("converts seed", func(t *testing.T) {
@@ -232,7 +289,7 @@ func TestConvertParams(t *testing.T) {
 			Seed:     &seed,
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.Equal(t, int64(42), req.Seed.Value)
 	})
@@ -246,7 +303,7 @@ func TestConvertParams(t *testing.T) {
 			User:     "test-user",
 		}
 
-		req := convertParams(params)
+		req := convertParams(params, providerName)
 
 		require.Equal(t, "test-user", req.User.Value)
 	})
@@ -259,7 +316,7 @@ func TestConvertMessage(t *testing.T) {
 		t.Parallel()
 
 		msg := providers.Message{Role: providers.RoleSystem, Content: "You are helpful"}
-		result, err := convertMessage(msg)
+		result, err := convertMessage(msg, providerName)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
@@ -268,7 +325,7 @@ func TestConvertMessage(t *testing.T) {
 		t.Parallel()
 
 		msg := providers.Message{Role: providers.RoleUser, Content: "Hello"}
-		result, err := convertMessage(msg)
+		result, err := convertMessage(msg, providerName)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
@@ -277,7 +334,7 @@ func TestConvertMessage(t *testing.T) {
 		t.Parallel()
 
 		msg := providers.Message{Role: providers.RoleAssistant, Content: "Hi there!"}
-		result, err := convertMessage(msg)
+		result, err := convertMessage(msg, providerName)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
@@ -299,7 +356,7 @@ func TestConvertMessage(t *testing.T) {
 				},
 			},
 		}
-		result, err := convertMessage(msg)
+		result, err := convertMessage(msg, providerName)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
@@ -312,7 +369,7 @@ func TestConvertMessage(t *testing.T) {
 			Content:    "sunny, 22°C",
 			ToolCallID: "call_123",
 		}
-		result, err := convertMessage(msg)
+		result, err := convertMessage(msg, providerName)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
@@ -327,7 +384,7 @@ func TestConvertMessage(t *testing.T) {
 				{Type: "image_url", ImageURL: &providers.ImageURL{URL: "https://example.com/image.png"}},
 			},
 		}
-		result, err := convertMessage(msg)
+		result, err := convertMessage(msg, providerName)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 	})
@@ -336,7 +393,7 @@ func TestConvertMessage(t *testing.T) {
 		t.Parallel()
 
 		msg := providers.Message{Role: "unknown_role", Content: "Hello"}
-		_, err := convertMessage(msg)
+		_, err := convertMessage(msg, providerName)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unknown message role")
 	})
@@ -362,11 +419,13 @@ func TestConvertTools(t *testing.T) {
 		result := convertTools(tools)
 
 		require.Len(t, result, 1)
-		require.Equal(t, "get_weather", result[0].Function.Name)
-		require.Equal(t, "Get the current weather for a location.", result[0].Function.Description.Value)
+		function := result[0].GetFunction()
+		require.NotNil(t, function)
+		require.Equal(t, "get_weather", function.Name)
+		require.Equal(t, "Get the current weather for a location.", function.Description.Value)
 
 		// FunctionParameters is map[string]any - access directly.
-		params := result[0].Function.Parameters
+		params := function.Parameters
 		require.Equal(t, "object", params["type"])
 
 		props, ok := params["properties"].(map[string]any)
@@ -391,10 +450,12 @@ func TestConvertTools(t *testing.T) {
 		result := convertTools(tools)
 
 		require.Len(t, result, 1)
-		require.Equal(t, "calculate", result[0].Function.Name)
+		function := result[0].GetFunction()
+		require.NotNil(t, function)
+		require.Equal(t, "calculate", function.Name)
 
 		// FunctionParameters is map[string]any - access directly.
-		params := result[0].Function.Parameters
+		params := function.Parameters
 
 		props, ok := params["properties"].(map[string]any)
 		require.True(t, ok)
@@ -436,8 +497,8 @@ func TestConvertTools(t *testing.T) {
 		result := convertTools(tools)
 
 		require.Len(t, result, 2)
-		require.Equal(t, "get_weather", result[0].Function.Name)
-		require.Equal(t, "get_current_date", result[1].Function.Name)
+		require.Equal(t, "get_weather", result[0].GetFunction().Name)
+		require.Equal(t, "get_current_date", result[1].GetFunction().Name)
 	})
 }
 
@@ -828,6 +889,10 @@ func TestIntegrationListModels(t *testing.T) {
 
 func TestIntegrationAuthenticationError(t *testing.T) {
 	t.Parallel()
+
+	if testutil.SkipIfNoAPIKey("openai") {
+		t.Skip("OPENAI_API_KEY not set")
+	}
 
 	provider, err := New(config.WithAPIKey("invalid-api-key"))
 	require.NoError(t, err)
