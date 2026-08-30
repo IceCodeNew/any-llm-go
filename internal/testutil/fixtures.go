@@ -13,23 +13,24 @@ import (
 
 // ProviderModelMap maps providers to small, cheap test models.
 var ProviderModelMap = map[string]string{
-	"openai":     "gpt-4o-mini",
-	"anthropic":  "claude-3-5-haiku-latest",
-	"mistral":    "mistral-small-latest",
-	"gemini":     "gemini-2.5-flash",
-	"cohere":     "command-r",
-	"groq":       "llama-3.3-70b-versatile",
-	"ollama":     "llama3.2",
-	"llamafile":  "LLaMA_CPP",
-	"together":   "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-	"perplexity": "llama-3.1-sonar-small-128k-online",
-	"deepseek":   "deepseek-chat",
-	"fireworks":  "accounts/fireworks/models/llama-v3p1-8b-instruct",
-	"xai":        "grok-beta",
-	"cerebras":   "llama3.1-8b",
-	"openrouter": "meta-llama/llama-3.1-8b-instruct",
-	"llamacpp":   "Qwen2.5-7B-Instruct",
-	"zai":        "glm-4.7-flash",
+	"openai":      "gpt-4o-mini",
+	"anthropic":   "claude-3-5-haiku-latest",
+	"azureopenai": "gpt-4o-mini",
+	"mistral":     "mistral-small-latest",
+	"gemini":      "gemini-2.5-flash",
+	"cohere":      "command-r",
+	"groq":        "llama-3.3-70b-versatile",
+	"ollama":      "llama3.2",
+	"llamafile":   "LLaMA_CPP",
+	"together":    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+	"perplexity":  "llama-3.1-sonar-small-128k-online",
+	"deepseek":    "deepseek-chat",
+	"fireworks":   "accounts/fireworks/models/llama-v3p1-8b-instruct",
+	"xai":         "grok-beta",
+	"cerebras":    "llama3.1-8b",
+	"openrouter":  "meta-llama/llama-3.1-8b-instruct",
+	"llamacpp":    "Qwen2.5-7B-Instruct",
+	"zai":         "glm-4.7-flash",
 }
 
 // ProviderReasoningModelMap maps providers to reasoning-capable models.
@@ -80,21 +81,22 @@ var LocalProviders = map[string]bool{
 
 // providerEnvKeys maps provider names to their API key environment variable names.
 var providerEnvKeys = map[string]string{
-	"anthropic":  "ANTHROPIC_API_KEY",
-	"cerebras":   "CEREBRAS_API_KEY",
-	"cohere":     "COHERE_API_KEY",
-	"deepseek":   "DEEPSEEK_API_KEY",
-	"fireworks":  "FIREWORKS_API_KEY",
-	"gateway":    "GATEWAY_API_KEY",
-	"gemini":     "GEMINI_API_KEY",
-	"groq":       "GROQ_API_KEY",
-	"mistral":    "MISTRAL_API_KEY",
-	"openai":     "OPENAI_API_KEY",
-	"openrouter": "OPENROUTER_API_KEY",
-	"perplexity": "PERPLEXITY_API_KEY",
-	"together":   "TOGETHER_API_KEY",
-	"xai":        "XAI_API_KEY",
-	"zai":        "ZAI_API_KEY",
+	"anthropic":   "ANTHROPIC_API_KEY",
+	"azureopenai": "AZURE_OPENAI_API_KEY",
+	"cerebras":    "CEREBRAS_API_KEY",
+	"cohere":      "COHERE_API_KEY",
+	"deepseek":    "DEEPSEEK_API_KEY",
+	"fireworks":   "FIREWORKS_API_KEY",
+	"gateway":     "GATEWAY_API_KEY",
+	"gemini":      "GEMINI_API_KEY",
+	"groq":        "GROQ_API_KEY",
+	"mistral":     "MISTRAL_API_KEY",
+	"openai":      "OPENAI_API_KEY",
+	"openrouter":  "OPENROUTER_API_KEY",
+	"perplexity":  "PERPLEXITY_API_KEY",
+	"together":    "TOGETHER_API_KEY",
+	"xai":         "XAI_API_KEY",
+	"zai":         "ZAI_API_KEY",
 }
 
 // SimpleMessages returns a simple test message.
@@ -244,9 +246,12 @@ func MockCalculatorResult(t *testing.T, a float64, b float64, operation string) 
 	case "multiply":
 		result = a * b
 	case "divide":
-		if b != 0 {
-			result = a / b
+		if b == 0 {
+			t.Fatalf("MockCalculatorResult: division by zero")
 		}
+		result = a / b
+	default:
+		t.Fatalf("MockCalculatorResult: unknown operation %q", operation)
 	}
 
 	var formatted string
@@ -279,6 +284,11 @@ func SkipIfNoAPIKey(provider string) bool {
 
 // TestModel returns the test model for a provider.
 func TestModel(provider string) string {
+	if provider == "azureopenai" {
+		if deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT"); deployment != "" {
+			return deployment
+		}
+	}
 	if model, ok := ProviderModelMap[provider]; ok {
 		return model
 	}
