@@ -2,8 +2,10 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,42 +320,31 @@ func TestConvertResponseFormat(t *testing.T) {
 func TestConvertEmbeddingParams(t *testing.T) {
 	t.Parallel()
 
-	t.Run("converts string input", func(t *testing.T) {
-		t.Parallel()
+	for _, testCase := range []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{name: "string", input: "Hello", want: `"Hello"`},
+		{name: "string array", input: []string{"Hello", "World"}, want: `["Hello","World"]`},
+		{name: "native token array", input: []int{1, 2}, want: `[1,2]`},
+		{name: "SDK token array", input: []int64{1, 2}, want: `[1,2]`},
+		{name: "native token arrays", input: [][]int{{1, 2}, {3}}, want: `[[1,2],[3]]`},
+		{name: "SDK token arrays", input: [][]int64{{1, 2}, {3}}, want: `[[1,2],[3]]`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 
-		params := providers.EmbeddingParams{
-			Model: "text-embedding-3-small",
-			Input: "Hello, world!",
-		}
-
-		result := convertEmbeddingParams(params)
-		require.NotNil(t, result.Input.OfString)
-	})
-
-	t.Run("converts string array input", func(t *testing.T) {
-		t.Parallel()
-
-		params := providers.EmbeddingParams{
-			Model: "text-embedding-3-small",
-			Input: []string{"Hello", "World"},
-		}
-
-		result := convertEmbeddingParams(params)
-		require.NotNil(t, result.Input.OfArrayOfStrings)
-	})
-
-	t.Run("handles unknown input type", func(t *testing.T) {
-		t.Parallel()
-
-		params := providers.EmbeddingParams{
-			Model: "text-embedding-3-small",
-			Input: 12345, // Unsupported type.
-		}
-
-		result := convertEmbeddingParams(params)
-		// Should convert to string representation.
-		require.NotNil(t, result.Input.OfString)
-	})
+			result, err := convertEmbeddingParams(providers.EmbeddingParams{
+				Model: "text-embedding-3-small",
+				Input: testCase.input,
+			})
+			require.NoError(t, err)
+			wire, err := json.Marshal(result)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"input":`+testCase.want+`,"model":"text-embedding-3-small"}`, string(wire))
+		})
+	}
 
 	t.Run("includes optional parameters", func(t *testing.T) {
 		t.Parallel()
@@ -367,10 +358,35 @@ func TestConvertEmbeddingParams(t *testing.T) {
 			User:           "test-user",
 		}
 
-		result := convertEmbeddingParams(params)
+		result, err := convertEmbeddingParams(params)
+		require.NoError(t, err)
 		require.Equal(t, int64(256), result.Dimensions.Value)
 		require.Equal(t, "test-user", result.User.Value)
 	})
+}
+
+func TestEmbeddingRejectsUnsupportedInputBeforeRequest(t *testing.T) {
+	t.Parallel()
+
+	var requested atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requested.Store(true)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := NewCompatible(CompatibleConfig{
+		Name:           providerName,
+		DefaultAPIKey:  "test-key",
+		DefaultBaseURL: server.URL,
+	})
+	require.NoError(t, err)
+
+	_, err = provider.Embedding(t.Context(), providers.EmbeddingParams{
+		Model: "text-embedding-3-small",
+		Input: map[string]string{"unsupported": "object"},
+	})
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+	require.False(t, requested.Load())
 }
 
 func TestStreamingContextCancellation(t *testing.T) {
