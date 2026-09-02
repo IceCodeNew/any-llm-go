@@ -141,18 +141,8 @@ func patchMessageParams(params providers.CompletionParams) providers.CompletionP
 	return params
 }
 
-// transformRequest adjusts the OpenAI SDK request for Mistral's API.
-// Mistral uses max_tokens (not max_completion_tokens) and does not accept user or reasoning_effort fields.
-// If both are set, MaxCompletionTokens takes precedence over MaxTokens.
-// See: https://docs.mistral.ai/api/#tag/chat/operation/chat_completion_v1_chat_completions_post
+// transformRequest preserves Mistral-specific request omissions.
 func transformRequest(req *oaisdk.ChatCompletionNewParams) {
-	if req.MaxCompletionTokens.Valid() {
-		// Set max_tokens using max_completion_tokens value.
-		req.MaxTokens = oaisdk.Int(req.MaxCompletionTokens.Value)
-	}
-
-	// Clear unsupported fields from the request.
-	req.MaxCompletionTokens = param.Opt[int64]{}
 	req.User = param.Opt[string]{}
 	req.ReasoningEffort = ""
 }
