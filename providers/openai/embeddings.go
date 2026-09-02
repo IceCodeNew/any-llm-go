@@ -6,6 +6,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 
+	"github.com/mozilla-ai/any-llm-go/errors"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
 
@@ -14,7 +15,10 @@ func (p *CompatibleProvider) Embedding(
 	ctx context.Context,
 	params providers.EmbeddingParams,
 ) (*providers.EmbeddingResponse, error) {
-	req := convertEmbeddingParams(params)
+	req, err := convertEmbeddingParams(params)
+	if err != nil {
+		return nil, errors.NewInvalidRequestError(p.Name(), err)
+	}
 
 	resp, err := p.client.Embeddings.New(ctx, req)
 	if err != nil {
@@ -24,8 +28,11 @@ func (p *CompatibleProvider) Embedding(
 	return convertEmbeddingResponse(resp), nil
 }
 
-// convertEmbeddingParams converts provider embedding params to OpenAI format.
-func convertEmbeddingParams(params providers.EmbeddingParams) openai.EmbeddingNewParams {
+// convertEmbeddingParams converts the four input shapes documented by the
+// OpenAI Embeddings API. The public binding also accepts Go's native int shape
+// and converts it without changing the wire representation.
+// https://developers.openai.com/api/reference/resources/embeddings/methods/create
+func convertEmbeddingParams(params providers.EmbeddingParams) (openai.EmbeddingNewParams, error) {
 	req := openai.EmbeddingNewParams{
 		Model: openai.EmbeddingModel(params.Model),
 	}
@@ -39,11 +46,30 @@ func convertEmbeddingParams(params providers.EmbeddingParams) openai.EmbeddingNe
 		req.Input = openai.EmbeddingNewParamsInputUnion{
 			OfArrayOfStrings: v,
 		}
-	default:
-		// For unsupported types, convert to string representation.
-		req.Input = openai.EmbeddingNewParamsInputUnion{
-			OfString: openai.String(fmt.Sprintf("%v", params.Input)),
+	case []int:
+		tokens := make([]int64, len(v))
+		for index, token := range v {
+			tokens[index] = int64(token)
 		}
+		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokens: tokens}
+	case []int64:
+		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokens: v}
+	case [][]int:
+		tokenArrays := make([][]int64, len(v))
+		for arrayIndex, tokenArray := range v {
+			tokenArrays[arrayIndex] = make([]int64, len(tokenArray))
+			for tokenIndex, token := range tokenArray {
+				tokenArrays[arrayIndex][tokenIndex] = int64(token)
+			}
+		}
+		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokenArrays: tokenArrays}
+	case [][]int64:
+		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokenArrays: v}
+	default:
+		return openai.EmbeddingNewParams{}, fmt.Errorf(
+			"embedding input must be string, []string, []int, []int64, [][]int, or [][]int64, got %T",
+			params.Input,
+		)
 	}
 
 	if params.EncodingFormat != "" {
@@ -58,7 +84,7 @@ func convertEmbeddingParams(params providers.EmbeddingParams) openai.EmbeddingNe
 		req.User = openai.String(params.User)
 	}
 
-	return req
+	return req, nil
 }
 
 // convertEmbeddingResponse converts an OpenAI embedding response to provider format.
