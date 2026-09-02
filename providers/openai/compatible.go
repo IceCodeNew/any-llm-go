@@ -517,8 +517,11 @@ func convertParams(params providers.CompletionParams) openai.ChatCompletionNewPa
 		req.TopP = openai.Float(*params.TopP)
 	}
 
+	// max_tokens and max_completion_tokens are distinct OpenAI request fields.
+	// Preserve the normalized field instead of silently changing its wire meaning.
+	// https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 	if params.MaxTokens != nil {
-		req.MaxCompletionTokens = openai.Int(int64(*params.MaxTokens))
+		req.MaxTokens = openai.Int(int64(*params.MaxTokens))
 	}
 
 	if len(params.Stop) > 0 {
@@ -551,7 +554,10 @@ func convertParams(params providers.CompletionParams) openai.ChatCompletionNewPa
 		req.User = openai.String(params.User)
 	}
 
-	if params.ReasoningEffort != "" && params.ReasoningEffort != providers.ReasoningEffortNone {
+	// auto is the binding's omission sentinel. OpenAI documents none as an
+	// explicit value, so it must reach the wire unchanged.
+	// https://developers.openai.com/api/docs/guides/latest-model
+	if params.ReasoningEffort != "" && params.ReasoningEffort != providers.ReasoningEffortAuto {
 		req.ReasoningEffort = shared.ReasoningEffort(params.ReasoningEffort)
 	}
 

@@ -116,7 +116,7 @@ func TestConvertParams(t *testing.T) {
 		require.Equal(t, 0.9, req.TopP.Value)
 	})
 
-	t.Run("converts max_tokens", func(t *testing.T) {
+	t.Run("preserves max_tokens", func(t *testing.T) {
 		t.Parallel()
 
 		maxTokens := 100
@@ -128,7 +128,8 @@ func TestConvertParams(t *testing.T) {
 
 		req := convertParams(params)
 
-		require.Equal(t, int64(100), req.MaxCompletionTokens.Value)
+		require.Equal(t, int64(100), req.MaxTokens.Value)
+		require.False(t, req.MaxCompletionTokens.Valid())
 	})
 
 	t.Run("converts stop sequences", func(t *testing.T) {
@@ -223,18 +224,32 @@ func TestConvertParams(t *testing.T) {
 		require.NotNil(t, req.ResponseFormat)
 	})
 
-	t.Run("converts reasoning_effort", func(t *testing.T) {
+	t.Run("preserves explicit reasoning_effort", func(t *testing.T) {
 		t.Parallel()
 
 		params := providers.CompletionParams{
-			Model:           "o1-mini",
+			Model:           "gpt-5.6-sol",
 			Messages:        testutil.SimpleMessages(),
-			ReasoningEffort: providers.ReasoningEffortHigh,
+			ReasoningEffort: providers.ReasoningEffortNone,
 		}
 
 		req := convertParams(params)
 
-		require.NotNil(t, req.ReasoningEffort)
+		require.Equal(t, "none", string(req.ReasoningEffort))
+	})
+
+	t.Run("omits automatic reasoning_effort sentinel", func(t *testing.T) {
+		t.Parallel()
+
+		params := providers.CompletionParams{
+			Model:           "gpt-5.6-sol",
+			Messages:        testutil.SimpleMessages(),
+			ReasoningEffort: providers.ReasoningEffortAuto,
+		}
+
+		req := convertParams(params)
+
+		require.Empty(t, req.ReasoningEffort)
 	})
 
 	t.Run("converts seed", func(t *testing.T) {
@@ -464,7 +479,7 @@ func TestConvertTools(t *testing.T) {
 	})
 }
 
-func TestCompletionSendsMaxCompletionTokensOnWire(t *testing.T) {
+func TestCompletionPreservesMaxTokensOnWire(t *testing.T) {
 	t.Parallel()
 
 	serverURL, capturedBody := testutil.FakeCompletionServer(t)
@@ -487,13 +502,36 @@ func TestCompletionSendsMaxCompletionTokensOnWire(t *testing.T) {
 
 	body := capturedBody()
 
-	// OpenAI requires max_completion_tokens (not max_tokens) for current models.
-	require.Contains(t, body, "max_completion_tokens")
-	require.NotContains(t, body, "max_tokens")
-	require.Equal(t, float64(1024), body["max_completion_tokens"])
+	require.Contains(t, body, "max_tokens")
+	require.NotContains(t, body, "max_completion_tokens")
+	require.Equal(t, float64(1024), body["max_tokens"])
 }
 
-func TestCompletionStreamSendsMaxCompletionTokensOnWire(t *testing.T) {
+func TestCompletionPreservesReasoningEffortOnWire(t *testing.T) {
+	t.Parallel()
+
+	serverURL, capturedBody := testutil.FakeCompletionServer(t)
+
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	params := providers.CompletionParams{
+		Model:           "gpt-5.6-sol",
+		Messages:        testutil.SimpleMessages(),
+		ReasoningEffort: providers.ReasoningEffortNone,
+	}
+
+	_, err = provider.Completion(context.Background(), params)
+	require.NoError(t, err)
+
+	body := capturedBody()
+	require.Equal(t, "none", body["reasoning_effort"])
+}
+
+func TestCompletionStreamPreservesMaxTokensOnWire(t *testing.T) {
 	t.Parallel()
 
 	serverURL, capturedBody := testutil.FakeStreamingServer(t)
@@ -520,10 +558,9 @@ func TestCompletionStreamSendsMaxCompletionTokensOnWire(t *testing.T) {
 
 	body := capturedBody()
 
-	// OpenAI requires max_completion_tokens (not max_tokens) for current models.
-	require.Contains(t, body, "max_completion_tokens")
-	require.NotContains(t, body, "max_tokens")
-	require.Equal(t, float64(1024), body["max_completion_tokens"])
+	require.Contains(t, body, "max_tokens")
+	require.NotContains(t, body, "max_completion_tokens")
+	require.Equal(t, float64(1024), body["max_tokens"])
 }
 
 // Integration tests - only run if API key is available.
