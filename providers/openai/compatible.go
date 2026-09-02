@@ -250,21 +250,6 @@ func (p *CompatibleProvider) ConvertError(err error) error {
 	return errors.NewProviderError(name, err)
 }
 
-// Embedding generates embeddings for the given input.
-func (p *CompatibleProvider) Embedding(
-	ctx context.Context,
-	params providers.EmbeddingParams,
-) (*providers.EmbeddingResponse, error) {
-	req := convertEmbeddingParams(params)
-
-	resp, err := p.client.Embeddings.New(ctx, req)
-	if err != nil {
-		return nil, p.ConvertError(err)
-	}
-
-	return convertEmbeddingResponse(resp), nil
-}
-
 // ListModels returns a list of available models.
 func (p *CompatibleProvider) ListModels(ctx context.Context) (*providers.ModelsResponse, error) {
 	resp, err := p.client.Models.List(ctx)
@@ -399,72 +384,6 @@ func convertChunk(chunk *openai.ChatCompletionChunk) providers.ChatCompletionChu
 			PromptTokens:     int(chunk.Usage.PromptTokens),
 			CompletionTokens: int(chunk.Usage.CompletionTokens),
 			TotalTokens:      int(chunk.Usage.TotalTokens),
-		}
-	}
-
-	return result
-}
-
-// convertEmbeddingParams converts provider embedding params to OpenAI format.
-func convertEmbeddingParams(params providers.EmbeddingParams) openai.EmbeddingNewParams {
-	req := openai.EmbeddingNewParams{
-		Model: openai.EmbeddingModel(params.Model),
-	}
-
-	switch v := params.Input.(type) {
-	case string:
-		req.Input = openai.EmbeddingNewParamsInputUnion{
-			OfString: openai.String(v),
-		}
-	case []string:
-		req.Input = openai.EmbeddingNewParamsInputUnion{
-			OfArrayOfStrings: v,
-		}
-	default:
-		// For unsupported types, convert to string representation.
-		req.Input = openai.EmbeddingNewParamsInputUnion{
-			OfString: openai.String(fmt.Sprintf("%v", params.Input)),
-		}
-	}
-
-	if params.EncodingFormat != "" {
-		req.EncodingFormat = openai.EmbeddingNewParamsEncodingFormat(params.EncodingFormat)
-	}
-
-	if params.Dimensions != nil {
-		req.Dimensions = openai.Int(int64(*params.Dimensions))
-	}
-
-	if params.User != "" {
-		req.User = openai.String(params.User)
-	}
-
-	return req
-}
-
-// convertEmbeddingResponse converts an OpenAI embedding response to provider format.
-func convertEmbeddingResponse(resp *openai.CreateEmbeddingResponse) *providers.EmbeddingResponse {
-	data := make([]providers.EmbeddingData, 0, len(resp.Data))
-	for _, d := range resp.Data {
-		embedding := make([]float64, len(d.Embedding))
-		copy(embedding, d.Embedding)
-		data = append(data, providers.EmbeddingData{
-			Object:    objectEmbedding,
-			Embedding: embedding,
-			Index:     int(d.Index),
-		})
-	}
-
-	result := &providers.EmbeddingResponse{
-		Object: objectList,
-		Data:   data,
-		Model:  resp.Model,
-	}
-
-	if resp.Usage.PromptTokens > 0 || resp.Usage.TotalTokens > 0 {
-		result.Usage = &providers.EmbeddingUsage{
-			PromptTokens: int(resp.Usage.PromptTokens),
-			TotalTokens:  int(resp.Usage.TotalTokens),
 		}
 	}
 
