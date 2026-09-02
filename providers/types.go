@@ -19,8 +19,10 @@ const (
 	ReasoningEffortAuto   ReasoningEffort = "auto"
 	ReasoningEffortHigh   ReasoningEffort = "high"
 	ReasoningEffortLow    ReasoningEffort = "low"
+	ReasoningEffortMax    ReasoningEffort = "max"
 	ReasoningEffortMedium ReasoningEffort = "medium"
 	ReasoningEffortNone   ReasoningEffort = "none"
+	ReasoningEffortXHigh  ReasoningEffort = "xhigh"
 )
 
 // Message roles.
@@ -95,7 +97,7 @@ type Capabilities struct {
 	CompletionImage     bool
 	CompletionPDF       bool
 	CompletionReasoning bool
-	CompletionStreaming  bool
+	CompletionStreaming bool
 	CompletionTools     bool
 	Embedding           bool
 	ListModels          bool

@@ -224,18 +224,28 @@ func TestConvertParams(t *testing.T) {
 		require.NotNil(t, req.ResponseFormat)
 	})
 
-	t.Run("preserves explicit reasoning_effort", func(t *testing.T) {
+	t.Run("preserves documented GPT-5.6 reasoning_effort values", func(t *testing.T) {
 		t.Parallel()
 
-		params := providers.CompletionParams{
-			Model:           "gpt-5.6-sol",
-			Messages:        testutil.SimpleMessages(),
-			ReasoningEffort: providers.ReasoningEffortNone,
+		efforts := []providers.ReasoningEffort{
+			providers.ReasoningEffortNone,
+			providers.ReasoningEffortLow,
+			providers.ReasoningEffortMedium,
+			providers.ReasoningEffortHigh,
+			providers.ReasoningEffortXHigh,
+			providers.ReasoningEffortMax,
 		}
+		for _, effort := range efforts {
+			params := providers.CompletionParams{
+				Model:           "gpt-5.6-sol",
+				Messages:        testutil.SimpleMessages(),
+				ReasoningEffort: effort,
+			}
 
-		req := convertParams(params)
+			req := convertParams(params)
 
-		require.Equal(t, "none", string(req.ReasoningEffort))
+			require.Equal(t, string(effort), string(req.ReasoningEffort))
+		}
 	})
 
 	t.Run("omits automatic reasoning_effort sentinel", func(t *testing.T) {
