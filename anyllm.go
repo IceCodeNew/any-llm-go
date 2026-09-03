@@ -26,6 +26,7 @@ import (
 // Message roles.
 const (
 	RoleAssistant = providers.RoleAssistant
+	RoleDeveloper = providers.RoleDeveloper
 	RoleSystem    = providers.RoleSystem
 	RoleTool      = providers.RoleTool
 	RoleUser      = providers.RoleUser

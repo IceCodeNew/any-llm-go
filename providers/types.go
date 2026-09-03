@@ -29,6 +29,7 @@ const (
 // Message roles.
 const (
 	RoleAssistant = "assistant"
+	RoleDeveloper = "developer"
 	RoleSystem    = "system"
 	RoleTool      = "tool"
 	RoleUser      = "user"
