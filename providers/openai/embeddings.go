@@ -16,6 +16,10 @@ func (p *CompatibleProvider) Embedding(
 	ctx context.Context,
 	params providers.EmbeddingParams,
 ) (*providers.EmbeddingResponse, error) {
+	if !p.Capabilities().Embedding {
+		return nil, errors.NewUnsupportedOperationError(p.Name(), "embedding", nil)
+	}
+
 	req, err := convertEmbeddingParams(params)
 	if err != nil {
 		return nil, errors.NewInvalidRequestError(p.Name(), err)

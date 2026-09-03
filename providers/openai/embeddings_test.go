@@ -68,11 +68,7 @@ func TestEmbeddingWireInputs(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			provider, err := anyopenai.NewCompatible(anyopenai.CompatibleConfig{
-				Name:           embeddingTestProvider,
-				DefaultAPIKey:  embeddingTestAPIKey,
-				DefaultBaseURL: server.URL,
-			})
+			provider, err := anyopenai.NewCompatible(embeddingTestConfig(server.URL))
 			require.NoError(t, err)
 
 			_, err = provider.Embedding(t.Context(), testCase.params)
@@ -98,11 +94,7 @@ func TestEmbeddingResponse(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	provider, err := anyopenai.NewCompatible(anyopenai.CompatibleConfig{
-		Name:           embeddingTestProvider,
-		DefaultAPIKey:  embeddingTestAPIKey,
-		DefaultBaseURL: server.URL,
-	})
+	provider, err := anyopenai.NewCompatible(embeddingTestConfig(server.URL))
 	require.NoError(t, err)
 
 	response, err := provider.Embedding(t.Context(), providers.EmbeddingParams{
@@ -130,6 +122,27 @@ func TestEmbeddingRejectsUnsupportedInputBeforeRequest(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
+	provider, err := anyopenai.NewCompatible(embeddingTestConfig(server.URL))
+	require.NoError(t, err)
+
+	_, err = provider.Embedding(t.Context(), providers.EmbeddingParams{
+		Model: embeddingTestModel,
+		Input: map[string]string{"unsupported": "object"},
+	})
+	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+	require.False(t, requested.Load())
+}
+
+func TestEmbeddingRejectsUnsupportedProviderBeforeRequest(t *testing.T) {
+	t.Parallel()
+
+	var requested atomic.Bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requested.Store(true)
+	}))
+	t.Cleanup(server.Close)
+
 	provider, err := anyopenai.NewCompatible(anyopenai.CompatibleConfig{
 		Name:           embeddingTestProvider,
 		DefaultAPIKey:  embeddingTestAPIKey,
@@ -139,9 +152,9 @@ func TestEmbeddingRejectsUnsupportedInputBeforeRequest(t *testing.T) {
 
 	_, err = provider.Embedding(t.Context(), providers.EmbeddingParams{
 		Model: embeddingTestModel,
-		Input: map[string]string{"unsupported": "object"},
+		Input: embeddingTestInput,
 	})
-	require.ErrorIs(t, err, errors.ErrInvalidRequest)
+	require.ErrorIs(t, err, errors.ErrUnsupported)
 	require.False(t, requested.Load())
 }
 
@@ -155,11 +168,7 @@ func TestEmbeddingMapsAPIError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	provider, err := anyopenai.NewCompatible(anyopenai.CompatibleConfig{
-		Name:           embeddingTestProvider,
-		DefaultAPIKey:  embeddingTestAPIKey,
-		DefaultBaseURL: server.URL,
-	})
+	provider, err := anyopenai.NewCompatible(embeddingTestConfig(server.URL))
 	require.NoError(t, err)
 
 	_, err = provider.Embedding(t.Context(), providers.EmbeddingParams{
@@ -179,11 +188,7 @@ func TestEmbeddingHonorsCancellation(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	provider, err := anyopenai.NewCompatible(anyopenai.CompatibleConfig{
-		Name:           embeddingTestProvider,
-		DefaultAPIKey:  embeddingTestAPIKey,
-		DefaultBaseURL: server.URL,
-	})
+	provider, err := anyopenai.NewCompatible(embeddingTestConfig(server.URL))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -207,11 +212,7 @@ func TestEmbeddingHonorsTimeout(t *testing.T) {
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(release) })
 
-	provider, err := anyopenai.NewCompatible(anyopenai.CompatibleConfig{
-		Name:           embeddingTestProvider,
-		DefaultAPIKey:  embeddingTestAPIKey,
-		DefaultBaseURL: server.URL,
-	})
+	provider, err := anyopenai.NewCompatible(embeddingTestConfig(server.URL))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
@@ -222,4 +223,13 @@ func TestEmbeddingHonorsTimeout(t *testing.T) {
 		Input: embeddingTestInput,
 	})
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func embeddingTestConfig(baseURL string) anyopenai.CompatibleConfig {
+	return anyopenai.CompatibleConfig{
+		Capabilities:   providers.Capabilities{Embedding: true},
+		DefaultAPIKey:  embeddingTestAPIKey,
+		DefaultBaseURL: baseURL,
+		Name:           embeddingTestProvider,
+	}
 }
