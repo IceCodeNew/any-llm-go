@@ -162,11 +162,16 @@ func preprocessParams(params providers.CompletionParams) providers.CompletionPar
 
 // transformRequest maps the shared token limit to DeepSeek's max_tokens field.
 // https://api-docs.deepseek.com/api/create-chat-completion
-func transformRequest(req *oaisdk.ChatCompletionNewParams) {
+func transformRequest(
+	_ providers.CompletionParams,
+	req *oaisdk.ChatCompletionNewParams,
+) error {
 	if req.MaxCompletionTokens.Valid() {
 		req.MaxTokens = oaisdk.Int(req.MaxCompletionTokens.Value)
 	}
 	req.MaxCompletionTokens = param.Opt[int64]{}
+
+	return nil
 }
 
 // preprocessMessagesForJSONSchema injects the JSON schema into the last user message.

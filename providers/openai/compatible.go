@@ -72,13 +72,9 @@ type CompatibleConfig struct {
 	// Name is the provider name used in error messages.
 	Name string
 
-	// ChatCompletionRequestTransform is an optional function that modifies the chat
-	// completion request after convertParams() builds it and before it is serialized
-	// to the wire. Providers that are not fully OpenAI-compatible use this to adjust
-	// wire-level fields (e.g. swapping max_completion_tokens back to max_tokens).
-	// The pointer refers to a locally-constructed value owned by the caller; the
-	// function must not retain it beyond the call. Nil means no transformation.
-	ChatCompletionRequestTransform func(*openai.ChatCompletionNewParams)
+	// ChatCompletionRequestTransform adapts provider-specific request fields
+	// after shared conversion and before serialization.
+	ChatCompletionRequestTransform func(providers.CompletionParams, *openai.ChatCompletionNewParams) error
 
 	// RequireAPIKey indicates whether an API key is required.
 	RequireAPIKey bool
@@ -176,8 +172,12 @@ func (p *CompatibleProvider) Completion(
 	}
 
 	req := convertParams(params)
-	if p.compatibleConfig.ChatCompletionRequestTransform != nil {
-		p.compatibleConfig.ChatCompletionRequestTransform(&req)
+	requestTransform := p.compatibleConfig.ChatCompletionRequestTransform
+	if requestTransform != nil {
+		transformErr := requestTransform(params, &req)
+		if transformErr != nil {
+			return nil, transformErr
+		}
 	}
 
 	resp, err := p.client.Chat.Completions.New(ctx, req)
@@ -215,9 +215,15 @@ func (p *CompatibleProvider) CompletionStream(
 		}
 
 		req := convertParams(params)
-		if p.compatibleConfig.ChatCompletionRequestTransform != nil {
-			p.compatibleConfig.ChatCompletionRequestTransform(&req)
+		requestTransform := p.compatibleConfig.ChatCompletionRequestTransform
+		if requestTransform != nil {
+			transformErr := requestTransform(params, &req)
+			if transformErr != nil {
+				errs <- transformErr
+				return
+			}
 		}
+
 		stream := p.client.Chat.Completions.NewStreaming(ctx, req)
 
 		for stream.Next() {
