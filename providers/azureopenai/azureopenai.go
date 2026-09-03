@@ -84,11 +84,12 @@ func New(opts ...config.Option) (*Provider, error) {
 	}
 
 	base, err := anyopenai.NewCompatible(anyopenai.CompatibleConfig{
-		Capabilities:   capabilities(),
-		ClientOptions:  clientOptions,
-		DefaultAPIKey:  apiKey,
-		DefaultBaseURL: endpoint,
-		Name:           providerName,
+		Capabilities:        capabilities(),
+		ClientOptions:       clientOptions,
+		DefaultAPIKey:       apiKey,
+		DefaultBaseURL:      endpoint,
+		Name:                providerName,
+		OpenAIMessageSchema: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create compatible provider: %w", err)

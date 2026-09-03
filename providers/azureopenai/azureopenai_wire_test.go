@@ -30,7 +30,13 @@ func TestAzureV1CoreWireContract(t *testing.T) {
 		case "/openai/v1/chat/completions":
 			body, err := io.ReadAll(request.Body)
 			assert.NoError(t, err)
-			assert.Contains(t, string(body), `"reasoning_effort":"none"`)
+			assert.JSONEq(t, `{
+				"messages": [
+					{"role": "developer", "content": "Follow the schema.", "name": "policy"}
+				],
+				"model": "deployment",
+				"reasoning_effort": "none"
+			}`, string(body))
 
 			_, _ = io.WriteString(
 				responseWriter,
@@ -64,8 +70,10 @@ func TestAzureV1CoreWireContract(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = provider.Completion(t.Context(), providers.CompletionParams{
-		Model:           "deployment",
-		Messages:        []providers.Message{{Role: providers.RoleUser, Content: "hello"}},
+		Model: "deployment",
+		Messages: []providers.Message{
+			{Role: providers.RoleDeveloper, Content: "Follow the schema.", Name: "policy"},
+		},
 		ReasoningEffort: providers.ReasoningEffortNone,
 	})
 	require.NoError(t, err)
