@@ -103,10 +103,6 @@ func convertOpenAIMessage(msg providers.Message) (openai.ChatCompletionMessagePa
 	}
 }
 
-func convertMessage(msg providers.Message) (openai.ChatCompletionMessageParamUnion, error) {
-	return convertOpenAIMessage(msg)
-}
-
 func convertCompatibleMessage(msg providers.Message) (openai.ChatCompletionMessageParamUnion, error) {
 	switch msg.Role {
 	case providers.RoleAssistant:
