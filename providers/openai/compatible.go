@@ -59,6 +59,10 @@ type CompatibleConfig struct {
 	// Capabilities describes what the provider supports.
 	Capabilities providers.Capabilities
 
+	// ChatCompletionResponseTransform adapts provider-specific response fields
+	// after the SDK and shared converter preserve the response envelope.
+	ChatCompletionResponseTransform func(*openai.ChatCompletion, *providers.ChatCompletion) error
+
 	// DefaultAPIKey is used when RequireAPIKey is false (e.g., for local servers).
 	DefaultAPIKey string
 
@@ -181,7 +185,16 @@ func (p *CompatibleProvider) Completion(
 		return nil, p.ConvertError(err)
 	}
 
-	return convertResponse(resp), nil
+	result := convertResponse(resp)
+	responseTransform := p.compatibleConfig.ChatCompletionResponseTransform
+	if responseTransform != nil {
+		err = responseTransform(resp, result)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
 }
 
 // CompletionStream performs a streaming chat completion request.
