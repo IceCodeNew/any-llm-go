@@ -422,7 +422,9 @@ func TestConvertResponseFormat(t *testing.T) {
 	t.Run("nil format returns nil", func(t *testing.T) {
 		t.Parallel()
 
-		result := convertResponseFormat(nil)
+		result, err := convertResponseFormat(nil)
+
+		require.NoError(t, err)
 		require.Nil(t, result)
 	})
 
@@ -430,10 +432,20 @@ func TestConvertResponseFormat(t *testing.T) {
 		t.Parallel()
 
 		format := &providers.ResponseFormat{Type: responseFormatJSON}
-		result := convertResponseFormat(format)
+		result, err := convertResponseFormat(format)
 
+		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Equal(t, `"json"`, string(result))
+	})
+
+	t.Run("text format uses the model default", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := convertResponseFormat(&providers.ResponseFormat{Type: responseFormatText})
+
+		require.NoError(t, err)
+		require.Nil(t, result)
 	})
 
 	t.Run("json_schema format", func(t *testing.T) {
@@ -444,17 +456,79 @@ func TestConvertResponseFormat(t *testing.T) {
 			JSONSchema: &providers.JSONSchema{
 				Name: "test",
 				Schema: map[string]any{
-					schemaKeyType: schemaTypeObject,
-					schemaKeyProperties: map[string]any{
-						"name": map[string]any{schemaKeyType: "string"},
+					"type": "object",
+					"properties": map[string]any{
+						"name": map[string]any{"type": "string"},
 					},
 				},
 			},
 		}
-		result := convertResponseFormat(format)
+		result, err := convertResponseFormat(format)
 
-		require.NotNil(t, result)
-		require.Contains(t, string(result), schemaKeyProperties)
+		require.NoError(t, err)
+		require.JSONEq(t, `{"type":"object","properties":{"name":{"type":"string"}}}`, string(result))
+	})
+
+	t.Run("rejects missing json schema", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := convertResponseFormat(&providers.ResponseFormat{Type: responseFormatSchema})
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, errors.ErrInvalidRequest)
+	})
+
+	t.Run("rejects unencodable json schema", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := convertResponseFormat(&providers.ResponseFormat{
+			Type: responseFormatSchema,
+			JSONSchema: &providers.JSONSchema{
+				Schema: map[string]any{"invalid": make(chan int)},
+			},
+		})
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, errors.ErrInvalidRequest)
+	})
+
+	t.Run("accepts strict json schema", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := convertResponseFormat(&providers.ResponseFormat{
+			Type: responseFormatSchema,
+			JSONSchema: &providers.JSONSchema{
+				Schema: map[string]any{"type": "object"},
+				Strict: new(true),
+			},
+		})
+
+		require.NoError(t, err)
+		require.JSONEq(t, `{"type":"object"}`, string(result))
+	})
+
+	t.Run("rejects disabled strict mode", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := convertResponseFormat(&providers.ResponseFormat{
+			Type: responseFormatSchema,
+			JSONSchema: &providers.JSONSchema{
+				Schema: map[string]any{"type": "object"},
+				Strict: new(false),
+			},
+		})
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
+	})
+
+	t.Run("rejects unknown format", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := convertResponseFormat(&providers.ResponseFormat{Type: "yaml"})
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, errors.ErrUnsupportedParam)
 	})
 }
 

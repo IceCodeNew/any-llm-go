@@ -44,21 +44,13 @@ const (
 	optionTopP        = "top_p"
 )
 
-// JSON schema keys and types.
-const (
-	schemaKeyDescription = "description"
-	schemaKeyProperties  = "properties"
-	schemaKeyRequired    = "required"
-	schemaKeyType        = "type"
-	schemaTypeObject     = "object"
-)
-
 // Tool and response format constants.
 const (
 	emptyJSONObject      = "{}"
 	ollamaFormatJSON     = "json"
 	responseFormatJSON   = "json_object"
 	responseFormatSchema = "json_schema"
+	responseFormatText   = "text"
 	toolCallIDFormat     = "call_%d"
 	toolTypeFunction     = "function"
 )
@@ -298,10 +290,9 @@ func (p *Provider) convertParams(params providers.CompletionParams) (*api.ChatRe
 		return nil, err
 	}
 
-	if params.ResponseFormat != nil {
-		if schema := convertResponseFormat(params.ResponseFormat); schema != nil {
-			req.Format = schema
-		}
+	req.Format, err = convertResponseFormat(params.ResponseFormat)
+	if err != nil {
+		return nil, err
 	}
 
 	// https://docs.ollama.com/api/chat defines think as a boolean or one of
@@ -751,22 +742,42 @@ func convertResponse(resp *api.ChatResponse) *providers.ChatCompletion {
 }
 
 // convertResponseFormat converts a response format to Ollama JSON schema.
-func convertResponseFormat(format *providers.ResponseFormat) json.RawMessage {
+func convertResponseFormat(format *providers.ResponseFormat) (json.RawMessage, error) {
 	if format == nil {
-		return nil
+		return nil, nil
 	}
 
 	if format.Type == responseFormatJSON {
-		return json.RawMessage(`"` + ollamaFormatJSON + `"`)
+		return json.RawMessage(`"` + ollamaFormatJSON + `"`), nil
+	}
+	if format.Type == responseFormatText {
+		return nil, nil
 	}
 
-	if format.Type == responseFormatSchema && format.JSONSchema != nil {
-		if schemaBytes, err := json.Marshal(format.JSONSchema.Schema); err == nil {
-			return schemaBytes
+	if format.Type == responseFormatSchema {
+		if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
+			return nil, errors.NewInvalidRequestError(
+				providerName,
+				stderrors.New("json_schema response format requires a schema"),
+			)
 		}
+		if format.JSONSchema.Strict != nil && !*format.JSONSchema.Strict {
+			return nil, errors.NewUnsupportedParamError(providerName, "response_format.json_schema.strict")
+		}
+		// Ollama accepts the raw schema without OpenAI's name, description, or
+		// strict wrapper and enforces it by default. The schema itself is kept intact.
+		// https://docs.ollama.com/capabilities/structured-outputs
+		schemaBytes, err := json.Marshal(format.JSONSchema.Schema)
+		if err != nil {
+			return nil, errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("response schema must be valid JSON: %w", err),
+			)
+		}
+		return schemaBytes, nil
 	}
 
-	return nil
+	return nil, errors.NewUnsupportedParamError(providerName, "response_format.type")
 }
 
 // convertToolCalls converts Ollama tool calls to provider format.
