@@ -274,6 +274,8 @@ type Function struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	// Strict requests schema-constrained function arguments when the provider supports it.
+	Strict *bool `json:"strict,omitempty"`
 }
 
 // FunctionCall represents the function being called.

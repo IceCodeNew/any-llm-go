@@ -689,13 +689,17 @@ func convertToolChoice(choice any) openai.ChatCompletionToolChoiceOptionUnionPar
 func convertTools(tools []providers.Tool) []openai.ChatCompletionToolUnionParam {
 	result := make([]openai.ChatCompletionToolUnionParam, 0, len(tools))
 	for _, tool := range tools {
+		function := openai.FunctionDefinitionParam{
+			Name:        tool.Function.Name,
+			Description: openai.String(tool.Function.Description),
+			Parameters:  openai.FunctionParameters(tool.Function.Parameters),
+		}
+		if tool.Function.Strict != nil {
+			function.Strict = openai.Bool(*tool.Function.Strict)
+		}
 		result = append(result, openai.ChatCompletionToolUnionParam{
 			OfFunction: &openai.ChatCompletionFunctionToolParam{
-				Function: openai.FunctionDefinitionParam{
-					Name:        tool.Function.Name,
-					Description: openai.String(tool.Function.Description),
-					Parameters:  openai.FunctionParameters(tool.Function.Parameters),
-				},
+				Function: function,
 			},
 		})
 	}
