@@ -34,6 +34,21 @@ func TestNew(t *testing.T) {
 		require.NotNil(t, provider)
 	})
 
+	t.Run("reads OPENAI_BASE_URL", func(t *testing.T) {
+		serverURL, _ := testutil.FakeCompletionServer(t)
+		t.Setenv("OPENAI_API_KEY", "env-api-key")
+		t.Setenv("OPENAI_BASE_URL", serverURL)
+
+		provider, err := New()
+		require.NoError(t, err)
+
+		_, err = provider.Completion(t.Context(), providers.CompletionParams{
+			Model:    "test-model",
+			Messages: testutil.SimpleMessages(),
+		})
+		require.NoError(t, err)
+	})
+
 	t.Run("returns error when API key is missing", func(t *testing.T) {
 		t.Setenv("OPENAI_API_KEY", "")
 
