@@ -53,6 +53,11 @@ type CompatibleConfig struct {
 	// Capabilities describes what the provider supports.
 	Capabilities providers.Capabilities
 
+	// ClientOptions replaces CompatibleProvider's API key, HTTP client, and base
+	// URL options when set. Providers with non-OpenAI authentication can supply
+	// configured SDK options while sharing request, stream, and error handling.
+	ClientOptions []option.RequestOption
+
 	// DefaultAPIKey is used when RequireAPIKey is false (e.g., for local servers).
 	DefaultAPIKey string
 
@@ -142,13 +147,16 @@ func NewCompatible(compatCfg CompatibleConfig, opts ...config.Option) (*Compatib
 		apiKey = compatCfg.DefaultAPIKey
 	}
 
-	clientOpts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
-		option.WithHTTPClient(cfg.HTTPClient()),
-	}
+	clientOpts := compatCfg.ClientOptions
+	if len(clientOpts) == 0 {
+		clientOpts = []option.RequestOption{
+			option.WithAPIKey(apiKey),
+			option.WithHTTPClient(cfg.HTTPClient()),
+		}
 
-	if baseURL != "" {
-		clientOpts = append(clientOpts, option.WithBaseURL(baseURL))
+		if baseURL != "" {
+			clientOpts = append(clientOpts, option.WithBaseURL(baseURL))
+		}
 	}
 
 	return &CompatibleProvider{
