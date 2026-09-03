@@ -50,14 +50,17 @@ type Provider struct {
 // New creates a new DeepSeek provider.
 func New(opts ...config.Option) (*Provider, error) {
 	base, err := openai.NewCompatible(openai.CompatibleConfig{
-		APIKeyEnvVar:                   envAPIKey,
-		BaseURLEnvVar:                  "",
-		Capabilities:                   capabilities(),
-		ChatCompletionRequestTransform: transformRequest,
-		DefaultAPIKey:                  "",
-		DefaultBaseURL:                 defaultBaseURL,
-		Name:                           providerName,
-		RequireAPIKey:                  true,
+		APIKeyEnvVar:                    envAPIKey,
+		APIErrorTransform:               transformAPIError,
+		BaseURLEnvVar:                   "",
+		Capabilities:                    capabilities(),
+		ChatCompletionChunkTransform:    transformChunk,
+		ChatCompletionRequestTransform:  transformRequest,
+		ChatCompletionResponseTransform: transformResponse,
+		DefaultAPIKey:                   "",
+		DefaultBaseURL:                  defaultBaseURL,
+		Name:                            providerName,
+		RequireAPIKey:                   true,
 	}, opts...)
 	if err != nil {
 		return nil, err
