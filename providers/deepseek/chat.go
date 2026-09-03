@@ -27,6 +27,9 @@ func transformRequest(
 	if params.Seed != nil {
 		return errors.NewUnsupportedParamError(providerName, "seed")
 	}
+	if err := transformVisionMessages(params.Messages, req.Messages); err != nil {
+		return err
+	}
 
 	if req.MaxCompletionTokens.Valid() {
 		req.MaxTokens = oaisdk.Int(req.MaxCompletionTokens.Value)
@@ -72,6 +75,57 @@ func transformRequest(
 	}
 
 	return nil
+}
+
+// transformVisionMessages validates DeepSeek's user-only image contract and
+// restores detail values omitted by the generic compatible converter.
+// https://api-docs.deepseek.com/guides/vision
+func transformVisionMessages(
+	messages []providers.Message,
+	reqMessages []oaisdk.ChatCompletionMessageParamUnion,
+) error {
+	for i, message := range messages {
+		if !message.IsMultiModal() {
+			continue
+		}
+		if message.Role != providers.RoleUser {
+			return errors.NewInvalidRequestError(
+				providerName,
+				fmt.Errorf("messages[%d] content parts are only supported for the user role", i),
+			)
+		}
+
+		for j, part := range message.ContentParts() {
+			switch part.Type {
+			case "text":
+				if part.ImageURL != nil {
+					return invalidVisionPart(i, j, "text content cannot include image_url")
+				}
+			case "image_url":
+				if part.ImageURL == nil || part.ImageURL.URL == "" || part.Text != "" {
+					return invalidVisionPart(i, j, "image_url content requires only a non-empty URL")
+				}
+				switch part.ImageURL.Detail {
+				case "", "auto", "low", "high", "original":
+				default:
+					return invalidVisionPart(i, j, fmt.Sprintf("unsupported image detail %q", part.ImageURL.Detail))
+				}
+				reqMessages[i].OfUser.Content.OfArrayOfContentParts[j].OfImageURL.ImageURL.Detail =
+					part.ImageURL.Detail
+			default:
+				return invalidVisionPart(i, j, fmt.Sprintf("unsupported content type %q", part.Type))
+			}
+		}
+	}
+
+	return nil
+}
+
+func invalidVisionPart(messageIndex, partIndex int, reason string) error {
+	return errors.NewInvalidRequestError(
+		providerName,
+		fmt.Errorf("messages[%d].content[%d]: %s", messageIndex, partIndex, reason),
+	)
 }
 
 func mapReasoningEffort(effort providers.ReasoningEffort) (thinking string, mapped string, err error) {
