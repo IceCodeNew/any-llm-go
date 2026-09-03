@@ -46,7 +46,6 @@ const (
 
 // Tool and response format constants.
 const (
-	emptyJSONObject      = "{}"
 	ollamaFormatJSON     = "json"
 	responseFormatJSON   = "json_object"
 	responseFormatSchema = "json_schema"
@@ -62,12 +61,6 @@ const (
 	objectEmbedding           = "embedding"
 	objectList                = "list"
 	objectModel               = "model"
-)
-
-// Thinking tag constants.
-const (
-	thinkingTagClose = "</think>"
-	thinkingTagOpen  = "<think>"
 )
 
 // Content part constants.
@@ -439,8 +432,10 @@ func convertDoneReason(reason string) string {
 	switch reason {
 	case doneReasonLength:
 		return providers.FinishReasonLength
-	default:
+	case "", doneReasonStop:
 		return providers.FinishReasonStop
+	default:
+		return reason
 	}
 }
 
@@ -724,12 +719,14 @@ func convertModelsResponse(resp *api.ListResponse) *providers.ModelsResponse {
 
 // convertResponse converts an Ollama response to provider format.
 func convertResponse(resp *api.ChatResponse) *providers.ChatCompletion {
-	content, reasoning := extractThinking(resp.Message.Content, resp.Message.Thinking)
-
 	message := providers.Message{
-		Role:      providers.RoleAssistant,
-		Content:   content,
-		Reasoning: reasoning,
+		Role:    providers.RoleAssistant,
+		Content: resp.Message.Content,
+	}
+	// The Chat schema exposes thinking separately, so content remains opaque.
+	// https://docs.ollama.com/api/chat
+	if resp.Message.Thinking != "" {
+		message.Reasoning = &providers.Reasoning{Content: resp.Message.Thinking}
 	}
 
 	// Handle tool calls.
@@ -804,20 +801,17 @@ func convertToolCalls(toolCalls []api.ToolCall) []providers.ToolCall {
 	result := make([]providers.ToolCall, 0, len(toolCalls))
 
 	for i, tc := range toolCalls {
-		args := emptyJSONObject
-		argsMap := tc.Function.Arguments.ToMap()
-		if len(argsMap) > 0 {
-			if argsBytes, err := json.Marshal(argsMap); err == nil {
-				args = string(argsBytes)
-			}
+		toolCallID := tc.ID
+		if toolCallID == "" {
+			toolCallID = fmt.Sprintf(toolCallIDFormat, i)
 		}
 
 		result = append(result, providers.ToolCall{
-			ID:   fmt.Sprintf(toolCallIDFormat, i),
+			ID:   toolCallID,
 			Type: toolTypeFunction,
 			Function: providers.FunctionCall{
 				Name:      tc.Function.Name,
-				Arguments: args,
+				Arguments: tc.Function.Arguments.String(),
 			},
 		})
 	}
@@ -911,35 +905,6 @@ func convertToolParameters(parameters map[string]any) (api.ToolFunctionParameter
 	}
 
 	return converted, nil
-}
-
-// extractThinking extracts thinking content from response.
-// It checks the dedicated Thinking field first, then falls back to parsing <think> tags.
-func extractThinking(content, thinking string) (string, *providers.Reasoning) {
-	// Check for dedicated thinking content first.
-	if thinking != "" {
-		return content, &providers.Reasoning{Content: thinking}
-	}
-
-	// Fall back to parsing <think> tags in content.
-	if !strings.Contains(content, thinkingTagOpen) || !strings.Contains(content, thinkingTagClose) {
-		return content, nil
-	}
-
-	parts := strings.SplitN(content, thinkingTagOpen, 2)
-	if len(parts) != 2 {
-		return content, nil
-	}
-
-	thinkParts := strings.SplitN(parts[1], thinkingTagClose, 2)
-	if len(thinkParts) != 2 {
-		return content, nil
-	}
-
-	reasoning := &providers.Reasoning{Content: thinkParts[0]}
-	cleanContent := strings.TrimSpace(parts[0] + thinkParts[1])
-
-	return cleanContent, reasoning
 }
 
 // generateID generates a unique ID for responses using crypto/rand.

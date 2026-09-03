@@ -194,7 +194,7 @@ func TestConvertDoneReason(t *testing.T) {
 		{
 			name:     "unknown reason",
 			reason:   "unknown",
-			expected: providers.FinishReasonStop,
+			expected: "unknown",
 		},
 	}
 
@@ -402,20 +402,24 @@ func TestConvertToolCalls(t *testing.T) {
 
 	toolCalls := []api.ToolCall{
 		{
+			ID: "server-call-id",
 			Function: api.ToolCallFunction{
 				Name:      "get_weather",
 				Arguments: args,
 			},
 		},
+		{Function: api.ToolCallFunction{Name: "fallback_id"}},
 	}
 
 	result := convertToolCalls(toolCalls)
 
-	require.Len(t, result, 1)
-	require.Equal(t, "call_0", result[0].ID)
+	require.Len(t, result, 2)
+	require.Equal(t, "server-call-id", result[0].ID)
 	require.Equal(t, toolTypeFunction, result[0].Type)
 	require.Equal(t, "get_weather", result[0].Function.Name)
-	require.Contains(t, result[0].Function.Arguments, "Paris")
+	require.JSONEq(t, `{"location":"Paris"}`, result[0].Function.Arguments)
+	require.Equal(t, "call_1", result[1].ID)
+	require.JSONEq(t, `{}`, result[1].Function.Arguments)
 }
 
 func TestConvertResponseFormat(t *testing.T) {
@@ -851,37 +855,23 @@ func TestStreamStateHandleChunk(t *testing.T) {
 	})
 }
 
-func TestExtractThinking(t *testing.T) {
+func TestConvertResponsePreservesOfficialThinkingField(t *testing.T) {
 	t.Parallel()
 
-	t.Run("returns dedicated thinking content", func(t *testing.T) {
-		t.Parallel()
-
-		content, reasoning := extractThinking("Hello", "I'm thinking...")
-
-		require.Equal(t, "Hello", content)
-		require.NotNil(t, reasoning)
-		require.Equal(t, "I'm thinking...", reasoning.Content)
+	response := convertResponse(&api.ChatResponse{
+		Message: api.Message{
+			Content:  "<think>literal content</think>Hello",
+			Thinking: "official thinking field",
+		},
 	})
 
-	t.Run("parses think tags from content", func(t *testing.T) {
-		t.Parallel()
+	message := response.Choices[0].Message
+	require.Equal(t, "<think>literal content</think>Hello", message.Content)
+	require.NotNil(t, message.Reasoning)
+	require.Equal(t, "official thinking field", message.Reasoning.Content)
 
-		content, reasoning := extractThinking("<think>Let me think</think>Hello world", "")
-
-		require.Equal(t, "Hello world", content)
-		require.NotNil(t, reasoning)
-		require.Equal(t, "Let me think", reasoning.Content)
-	})
-
-	t.Run("returns nil reasoning when no thinking", func(t *testing.T) {
-		t.Parallel()
-
-		content, reasoning := extractThinking("Hello world", "")
-
-		require.Equal(t, "Hello world", content)
-		require.Nil(t, reasoning)
-	})
+	withoutThinking := convertResponse(&api.ChatResponse{Message: api.Message{Content: "Hello"}})
+	require.Nil(t, withoutThinking.Choices[0].Message.Reasoning)
 }
 
 func TestConvertError(t *testing.T) {
