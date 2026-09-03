@@ -3,15 +3,18 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	oaisdk "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mozilla-ai/any-llm-go/config"
 	"github.com/mozilla-ai/any-llm-go/errors"
+	"github.com/mozilla-ai/any-llm-go/internal/testutil"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
 
@@ -212,6 +215,58 @@ func TestCompatibleProviderCapabilities(t *testing.T) {
 
 	caps := provider.Capabilities()
 	require.Equal(t, expectedCaps, caps)
+}
+
+func TestCompletionReturnsResponseTransformError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := stderrors.New("transform failed")
+	serverURL, _ := testutil.FakeCompletionServer(t)
+	provider, err := NewCompatible(CompatibleConfig{
+		ChatCompletionResponseTransform: func(
+			*oaisdk.ChatCompletion,
+			*providers.ChatCompletion,
+		) error {
+			return wantErr
+		},
+		DefaultAPIKey:  "test-key",
+		DefaultBaseURL: serverURL,
+		Name:           "test-provider",
+	})
+	require.NoError(t, err)
+
+	_, err = provider.Completion(t.Context(), providers.CompletionParams{
+		Model:    "test-model",
+		Messages: []providers.Message{{Role: providers.RoleUser, Content: "hello"}},
+	})
+	require.ErrorIs(t, err, wantErr)
+}
+
+func TestCompletionStreamReturnsChunkTransformError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := stderrors.New("transform failed")
+	serverURL, _ := testutil.FakeStreamingServer(t)
+	provider, err := NewCompatible(CompatibleConfig{
+		ChatCompletionChunkTransform: func(
+			*oaisdk.ChatCompletionChunk,
+			*providers.ChatCompletionChunk,
+		) error {
+			return wantErr
+		},
+		DefaultAPIKey:  "test-key",
+		DefaultBaseURL: serverURL,
+		Name:           "test-provider",
+	})
+	require.NoError(t, err)
+
+	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{
+		Model:    "test-model",
+		Messages: []providers.Message{{Role: providers.RoleUser, Content: "hello"}},
+	})
+	for range chunks {
+	}
+	require.ErrorIs(t, <-errs, wantErr)
 }
 
 func TestValidateCompletionParams(t *testing.T) {

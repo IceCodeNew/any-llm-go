@@ -50,6 +50,10 @@ const (
 // CompatibleConfig contains the configuration for an OpenAI-compatible provider.
 // Fields are ordered alphabetically.
 type CompatibleConfig struct {
+	// APIErrorTransform maps provider-specific HTTP errors without duplicating
+	// the compatible transport. When set, it owns every decoded API error.
+	APIErrorTransform func(*openai.Error, error) error
+
 	// APIKeyEnvVar is the environment variable for the API key.
 	APIKeyEnvVar string
 
@@ -59,11 +63,19 @@ type CompatibleConfig struct {
 	// Capabilities describes what the provider supports.
 	Capabilities providers.Capabilities
 
+	// ChatCompletionChunkTransform adapts provider-specific streaming fields
+	// after the SDK and shared converters preserve each chunk.
+	ChatCompletionChunkTransform func(*openai.ChatCompletionChunk, *providers.ChatCompletionChunk) error
+
 	// ChatCompletionRequestTransform is an optional function that modifies the chat
 	// completion request after convertParams() builds it and before it is serialized
 	// to the wire. The pointer refers to a locally-constructed value owned by the
 	// caller; the function must not retain it beyond the call.
 	ChatCompletionRequestTransform func(providers.CompletionParams, *openai.ChatCompletionNewParams) error
+
+	// ChatCompletionResponseTransform adapts provider-specific response fields
+	// after the SDK and shared converters preserve the response envelope.
+	ChatCompletionResponseTransform func(*openai.ChatCompletion, *providers.ChatCompletion) error
 
 	// DefaultAPIKey is used when RequireAPIKey is false (e.g., for local servers).
 	DefaultAPIKey string
@@ -181,7 +193,14 @@ func (p *CompatibleProvider) Completion(
 		return nil, p.ConvertError(err)
 	}
 
-	return convertResponse(resp), nil
+	result := convertResponse(resp)
+	if transform := p.compatibleConfig.ChatCompletionResponseTransform; transform != nil {
+		if err := transform(resp, result); err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
 }
 
 // CompletionStream performs a streaming chat completion request.
@@ -212,8 +231,15 @@ func (p *CompatibleProvider) CompletionStream(
 
 		for stream.Next() {
 			chunk := stream.Current()
+			result := convertChunk(&chunk)
+			if transform := p.compatibleConfig.ChatCompletionChunkTransform; transform != nil {
+				if err := transform(&chunk, &result); err != nil {
+					errs <- err
+					return
+				}
+			}
 			select {
-			case chunks <- convertChunk(&chunk):
+			case chunks <- result:
 			case <-ctx.Done():
 				// Caller cancelled mid-stream; surface ctx.Err() so the
 				// consumer can tell a cancelled stream apart from one
@@ -242,8 +268,10 @@ func (p *CompatibleProvider) ConvertError(err error) error {
 	name := p.compatibleConfig.Name
 
 	// Check for OpenAI API error type.
-	var apiErr *openai.Error
-	if stderrors.As(err, &apiErr) {
+	if apiErr, ok := stderrors.AsType[*openai.Error](err); ok {
+		if transform := p.compatibleConfig.APIErrorTransform; transform != nil {
+			return transform(apiErr, err)
+		}
 		return convertAPIError(name, apiErr, err)
 	}
 
