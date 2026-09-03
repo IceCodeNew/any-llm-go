@@ -91,13 +91,12 @@ type Provider struct {
 	config *config.Config
 }
 
-// streamState tracks accumulated state during streaming.
+// streamState tracks response metadata and whether Ollama sent its terminal event.
 type streamState struct {
-	id        string
-	model     string
-	created   int64
-	content   strings.Builder
-	reasoning strings.Builder
+	id      string
+	model   string
+	created int64
+	done    bool
 }
 
 // New creates a new Ollama provider.
@@ -157,12 +156,20 @@ func (p *Provider) Completion(
 	req.Stream = &stream
 
 	var response api.ChatResponse
+	done := false
 	err = p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 		response = resp
+		done = resp.Done
 		return nil
 	})
 	if err != nil {
 		return nil, p.ConvertError(err)
+	}
+	if !done {
+		return nil, errors.NewProviderError(
+			providerName,
+			stderrors.New("response ended before the terminal event"),
+		)
 	}
 
 	return convertResponse(&response), nil
@@ -189,11 +196,22 @@ func (p *Provider) CompletionStream(
 
 		err = p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 			chunk := state.handleChunk(&resp)
-			chunks <- chunk
-			return nil
+			select {
+			case chunks <- chunk:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		})
 		if err != nil {
 			errs <- p.ConvertError(err)
+			return
+		}
+		if !state.done {
+			errs <- errors.NewProviderError(
+				providerName,
+				stderrors.New("stream ended before the terminal event"),
+			)
 		}
 	}()
 
@@ -355,6 +373,9 @@ func (s *streamState) chunk() providers.ChatCompletionChunk {
 // handleChunk processes a streaming response and returns a chunk.
 func (s *streamState) handleChunk(resp *api.ChatResponse) providers.ChatCompletionChunk {
 	s.updateMetadata(resp)
+	if resp.Done {
+		s.done = true
+	}
 
 	chunk := s.chunk()
 	chunk.Choices[0].Delta = s.buildDelta(resp)
@@ -382,13 +403,11 @@ func (s *streamState) buildDelta(resp *api.ChatResponse) providers.ChunkDelta {
 
 	// Handle content.
 	if resp.Message.Content != "" {
-		s.content.WriteString(resp.Message.Content)
 		delta.Content = resp.Message.Content
 	}
 
 	// Handle thinking/reasoning.
 	if resp.Message.Thinking != "" {
-		s.reasoning.WriteString(resp.Message.Thinking)
 		delta.Reasoning = &providers.Reasoning{Content: resp.Message.Thinking}
 	}
 

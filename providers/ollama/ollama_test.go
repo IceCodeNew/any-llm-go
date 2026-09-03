@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -779,7 +781,6 @@ func TestStreamStateHandleChunk(t *testing.T) {
 		require.Equal(t, "llama3.2", chunk.Model)
 		require.Len(t, chunk.Choices, 1)
 		require.Equal(t, "Hello ", chunk.Choices[0].Delta.Content)
-		require.Equal(t, "Hello ", state.content.String())
 	})
 
 	t.Run("handles thinking chunk", func(t *testing.T) {
@@ -797,7 +798,6 @@ func TestStreamStateHandleChunk(t *testing.T) {
 
 		require.NotNil(t, chunk.Choices[0].Delta.Reasoning)
 		require.Equal(t, "Let me think...", chunk.Choices[0].Delta.Reasoning.Content)
-		require.Equal(t, "Let me think...", state.reasoning.String())
 	})
 
 	t.Run("handles done chunk with usage", func(t *testing.T) {
@@ -822,6 +822,7 @@ func TestStreamStateHandleChunk(t *testing.T) {
 		require.Equal(t, 10, chunk.Usage.PromptTokens)
 		require.Equal(t, 20, chunk.Usage.CompletionTokens)
 		require.Equal(t, 30, chunk.Usage.TotalTokens)
+		require.True(t, state.done)
 	})
 
 	t.Run("handles done chunk with tool calls", func(t *testing.T) {
@@ -967,6 +968,135 @@ func TestGenerateID(t *testing.T) {
 	require.NotEmpty(t, id2)
 	require.True(t, strings.HasPrefix(id1, "chatcmpl-"))
 	require.NotEqual(t, id1, id2) // IDs should be unique.
+}
+
+func newTestProvider(t *testing.T, handler http.Handler) *Provider {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	provider, err := New(config.WithBaseURL(server.URL))
+	require.NoError(t, err)
+
+	return provider
+}
+
+func TestCompletionRequiresTerminalResponse(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"model":"test","message":{"role":"assistant","content":"partial"},"done":false}`)
+	}))
+
+	_, err := provider.Completion(t.Context(), providers.CompletionParams{Model: "test"})
+	require.ErrorIs(t, err, errors.ErrProvider)
+}
+
+func TestCompletionAcceptsTerminalResponse(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"model":"test","message":{"role":"assistant","content":"done"},"done":true}`)
+	}))
+
+	response, err := provider.Completion(t.Context(), providers.CompletionParams{Model: "test"})
+
+	require.NoError(t, err)
+	require.Equal(t, "done", response.Choices[0].Message.Content)
+}
+
+func TestCompletionStreamRequiresTerminalResponse(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"model":"test","message":{"role":"assistant","content":"partial"},"done":false}`)
+	}))
+
+	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{Model: "test"})
+	chunkCount := 0
+	for range chunks {
+		chunkCount++
+	}
+
+	require.Equal(t, 1, chunkCount)
+	require.ErrorIs(t, <-errs, errors.ErrProvider)
+}
+
+func TestCompletionStreamAcceptsTerminalResponse(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"model":"test","message":{"role":"assistant","content":"done"},"done":true}`)
+	}))
+
+	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{Model: "test"})
+	chunkCount := 0
+	for range chunks {
+		chunkCount++
+	}
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 1, chunkCount)
+}
+
+func TestCompletionStreamReturnsMidstreamError(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"model":"test","message":{"role":"assistant","content":"partial"},"done":false}`)
+		_, _ = fmt.Fprintln(w, `{"error":"generation failed"}`)
+	}))
+
+	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{Model: "test"})
+	chunkCount := 0
+	for range chunks {
+		chunkCount++
+	}
+
+	require.Equal(t, 1, chunkCount)
+	require.ErrorIs(t, <-errs, errors.ErrProvider)
+}
+
+func TestCompletionStreamCancellationUnblocksUnreadConsumer(t *testing.T) {
+	t.Parallel()
+
+	wroteChunk := make(chan struct{})
+	provider := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"model":"test","message":{"role":"assistant","content":"partial"},"done":false}`)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		flusher.Flush()
+		close(wroteChunk)
+		<-request.Context().Done()
+	}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	chunks, errs := provider.CompletionStream(ctx, providers.CompletionParams{Model: "test"})
+	select {
+	case <-wroteChunk:
+	case <-time.After(time.Second):
+		t.Fatal("server did not write the first stream chunk")
+	}
+	cancel()
+
+	select {
+	case err := <-errs:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("stream did not stop after cancellation")
+	}
+	_, open := <-chunks
+	require.False(t, open)
 }
 
 // Integration tests - only run if Ollama is available.
