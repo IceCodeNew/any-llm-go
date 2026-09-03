@@ -185,6 +185,108 @@ func TestCompletionStreamMapsCurrentThinkingRequest(t *testing.T) {
 	require.NotContains(t, body, "user")
 }
 
+func TestCompletionPreservesCurrentVisionImageWire(t *testing.T) {
+	t.Parallel()
+
+	serverURL, requestBody := deepSeekCompletionServer(t, `{
+		"id":"chatcmpl-test","object":"chat.completion","created":1700000000,
+		"model":"deepseek-v4-flash-vision-exp","choices":[{"index":0,
+		"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]
+	}`)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	_, err = provider.Completion(t.Context(), providers.CompletionParams{
+		Model: "deepseek-v4-flash-vision-exp",
+		Messages: []providers.Message{{
+			Role: providers.RoleUser,
+			Content: []providers.ContentPart{
+				{Type: "text", Text: "Compare these images."},
+				{
+					Type: "image_url",
+					ImageURL: &providers.ImageURL{
+						URL:    "https://example.com/chart.png",
+						Detail: "low",
+					},
+				},
+				{
+					Type: "image_url",
+					ImageURL: &providers.ImageURL{
+						URL:    "data:image/png;base64,iVBORw0KGgo=",
+						Detail: "original",
+					},
+				},
+				{
+					Type: "image_url",
+					ImageURL: &providers.ImageURL{
+						URL:    "https://example.com/screenshot.png",
+						Detail: "high",
+					},
+				},
+				{
+					Type: "image_url",
+					ImageURL: &providers.ImageURL{
+						URL:    "https://example.com/photo.webp",
+						Detail: "auto",
+					},
+				},
+				{
+					Type: "image_url",
+					ImageURL: &providers.ImageURL{
+						URL: "https://example.com/default.gif",
+					},
+				},
+			},
+		}},
+	})
+	require.NoError(t, err)
+
+	messages, ok := (<-requestBody)["messages"].([]any)
+	require.True(t, ok)
+	message, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, []any{
+		map[string]any{"type": "text", "text": "Compare these images."},
+		map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url":    "https://example.com/chart.png",
+				"detail": "low",
+			},
+		},
+		map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url":    "data:image/png;base64,iVBORw0KGgo=",
+				"detail": "original",
+			},
+		},
+		map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url":    "https://example.com/screenshot.png",
+				"detail": "high",
+			},
+		},
+		map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url":    "https://example.com/photo.webp",
+				"detail": "auto",
+			},
+		},
+		map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url": "https://example.com/default.gif",
+			},
+		},
+	}, message["content"])
+}
+
 func TestCompletionRejectsUnsupportedParamsBeforeTransport(t *testing.T) {
 	t.Parallel()
 
@@ -210,6 +312,74 @@ func TestCompletionRejectsUnsupportedParamsBeforeTransport(t *testing.T) {
 			params: providers.CompletionParams{Seed: new(7)},
 			want:   llmerrors.ErrUnsupportedParam,
 		},
+		{
+			name: "image in system message",
+			params: providers.CompletionParams{Messages: []providers.Message{{
+				Role: providers.RoleSystem,
+				Content: []providers.ContentPart{{
+					Type:     "image_url",
+					ImageURL: &providers.ImageURL{URL: "https://example.com/chart.png"},
+				}},
+			}}},
+			want: llmerrors.ErrInvalidRequest,
+		},
+		{
+			name: "missing image URL",
+			params: providers.CompletionParams{Messages: []providers.Message{{
+				Role: providers.RoleUser,
+				Content: []providers.ContentPart{{
+					Type:     "image_url",
+					ImageURL: &providers.ImageURL{},
+				}},
+			}}},
+			want: llmerrors.ErrInvalidRequest,
+		},
+		{
+			name: "text part with image URL",
+			params: providers.CompletionParams{Messages: []providers.Message{{
+				Role: providers.RoleUser,
+				Content: []providers.ContentPart{{
+					Type:     "text",
+					Text:     "Describe this.",
+					ImageURL: &providers.ImageURL{URL: "https://example.com/chart.png"},
+				}},
+			}}},
+			want: llmerrors.ErrInvalidRequest,
+		},
+		{
+			name: "image part with text",
+			params: providers.CompletionParams{Messages: []providers.Message{{
+				Role: providers.RoleUser,
+				Content: []providers.ContentPart{{
+					Type:     "image_url",
+					Text:     "Describe this.",
+					ImageURL: &providers.ImageURL{URL: "https://example.com/chart.png"},
+				}},
+			}}},
+			want: llmerrors.ErrInvalidRequest,
+		},
+		{
+			name: "unsupported image detail",
+			params: providers.CompletionParams{Messages: []providers.Message{{
+				Role: providers.RoleUser,
+				Content: []providers.ContentPart{{
+					Type: "image_url",
+					ImageURL: &providers.ImageURL{
+						URL:    "https://example.com/chart.png",
+						Detail: "medium",
+					},
+				}},
+			}}},
+			want: llmerrors.ErrInvalidRequest,
+		},
+		{
+			name: "unsupported content part",
+			params: providers.CompletionParams{Messages: []providers.Message{{
+				Role:    providers.RoleUser,
+				Content: []providers.ContentPart{{Type: "file"}},
+			}}},
+			want: llmerrors.ErrInvalidRequest,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -227,7 +397,9 @@ func TestCompletionRejectsUnsupportedParamsBeforeTransport(t *testing.T) {
 			require.NoError(t, err)
 
 			test.params.Model = "deepseek-v4-pro"
-			test.params.Messages = testutil.SimpleMessages()
+			if len(test.params.Messages) == 0 {
+				test.params.Messages = testutil.SimpleMessages()
+			}
 			_, err = provider.Completion(t.Context(), test.params)
 			require.ErrorIs(t, err, test.want)
 
