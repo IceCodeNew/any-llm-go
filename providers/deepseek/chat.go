@@ -22,6 +22,10 @@ type deepSeekThinking struct {
 	Type string `json:"type"`
 }
 
+type deepSeekUsage struct {
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+}
+
 // transformRequest maps normalized controls to DeepSeek's current Chat schema.
 // https://api-docs.deepseek.com/api/create-chat-completion
 func transformRequest(
@@ -145,6 +149,12 @@ func transformResponse(source *oaisdk.ChatCompletion, result *providers.ChatComp
 		}
 	}
 
+	usage, err := transformUsage(source.Usage, result.Usage)
+	if err != nil {
+		return fmt.Errorf("decoding DeepSeek usage: %w", err)
+	}
+	result.Usage = usage
+
 	return nil
 }
 
@@ -164,7 +174,40 @@ func transformChunk(source *oaisdk.ChatCompletionChunk, result *providers.ChatCo
 		}
 	}
 
+	usage, err := transformUsage(source.Usage, result.Usage)
+	if err != nil {
+		return fmt.Errorf("decoding DeepSeek usage: %w", err)
+	}
+	result.Usage = usage
+
 	return nil
+}
+
+// transformUsage maps DeepSeek's top-level cache fields to the normalized
+// cached-token count. The OpenAI SDK retains these extension fields only in raw JSON.
+// https://api-docs.deepseek.com/guides/kv_cache
+func transformUsage(
+	source oaisdk.CompletionUsage,
+	result *providers.Usage,
+) (*providers.Usage, error) {
+	if source.RawJSON() == "" {
+		return result, nil
+	}
+
+	var usage deepSeekUsage
+	if err := json.Unmarshal([]byte(source.RawJSON()), &usage); err != nil {
+		return nil, err
+	}
+	if result == nil {
+		result = &providers.Usage{
+			PromptTokens:     int(source.PromptTokens),
+			CompletionTokens: int(source.CompletionTokens),
+			TotalTokens:      int(source.TotalTokens),
+		}
+	}
+	result.CachedTokens = usage.PromptCacheHitTokens
+
+	return result, nil
 }
 
 func decodeChatContent(raw string) (deepSeekChatContent, error) {

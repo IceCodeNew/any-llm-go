@@ -368,6 +368,8 @@ type ToolChoiceFunction struct {
 
 // Usage represents token usage information.
 type Usage struct {
+	// CachedTokens is the subset of PromptTokens served from an input cache.
+	CachedTokens     int `json:"cached_tokens,omitempty"`
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
