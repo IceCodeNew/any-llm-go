@@ -235,9 +235,8 @@ func (p *Provider) ConvertError(err error) error {
 		case 429:
 			return errors.NewRateLimitError(providerName, err)
 		case 400:
-			if strings.Contains(statusErr.ErrorMessage, "context") {
-				return errors.NewContextLengthError(providerName, err)
-			}
+			// Ollama exposes only status and message, without a machine-readable
+			// context-length code. https://docs.ollama.com/api/errors
 			return errors.NewInvalidRequestError(providerName, err)
 		}
 	}

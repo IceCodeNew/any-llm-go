@@ -909,9 +909,9 @@ func TestConvertError(t *testing.T) {
 			wantSentinel: errors.ErrRateLimit,
 		},
 		{
-			name:         "StatusError 400 with context becomes ContextLengthError",
+			name:         "StatusError 400 with context remains InvalidRequestError",
 			err:          api.StatusError{StatusCode: 400, ErrorMessage: "context length exceeded"},
-			wantSentinel: errors.ErrContextLength,
+			wantSentinel: errors.ErrInvalidRequest,
 		},
 		{
 			name:         "StatusError 400 without context becomes InvalidRequestError",
