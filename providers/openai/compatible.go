@@ -59,6 +59,12 @@ type CompatibleConfig struct {
 	// Capabilities describes what the provider supports.
 	Capabilities providers.Capabilities
 
+	// ChatCompletionRequestTransform is an optional function that modifies the chat
+	// completion request after convertParams() builds it and before it is serialized
+	// to the wire. The pointer refers to a locally-constructed value owned by the
+	// caller; the function must not retain it beyond the call.
+	ChatCompletionRequestTransform func(providers.CompletionParams, *openai.ChatCompletionNewParams) error
+
 	// DefaultAPIKey is used when RequireAPIKey is false (e.g., for local servers).
 	DefaultAPIKey string
 
@@ -67,14 +73,6 @@ type CompatibleConfig struct {
 
 	// Name is the provider name used in error messages.
 	Name string
-
-	// ChatCompletionRequestTransform is an optional function that modifies the chat
-	// completion request after convertParams() builds it and before it is serialized
-	// to the wire. Providers that are not fully OpenAI-compatible use this to adjust
-	// wire-level fields (e.g. swapping max_completion_tokens back to max_tokens).
-	// The pointer refers to a locally-constructed value owned by the caller; the
-	// function must not retain it beyond the call. Nil means no transformation.
-	ChatCompletionRequestTransform func(*openai.ChatCompletionNewParams)
 
 	// RequireAPIKey indicates whether an API key is required.
 	RequireAPIKey bool
@@ -172,8 +170,10 @@ func (p *CompatibleProvider) Completion(
 	}
 
 	req := convertParams(params)
-	if p.compatibleConfig.ChatCompletionRequestTransform != nil {
-		p.compatibleConfig.ChatCompletionRequestTransform(&req)
+	if transform := p.compatibleConfig.ChatCompletionRequestTransform; transform != nil {
+		if err := transform(params, &req); err != nil {
+			return nil, err
+		}
 	}
 
 	resp, err := p.client.Chat.Completions.New(ctx, req)
@@ -202,8 +202,11 @@ func (p *CompatibleProvider) CompletionStream(
 		}
 
 		req := convertParams(params)
-		if p.compatibleConfig.ChatCompletionRequestTransform != nil {
-			p.compatibleConfig.ChatCompletionRequestTransform(&req)
+		if transform := p.compatibleConfig.ChatCompletionRequestTransform; transform != nil {
+			if err := transform(params, &req); err != nil {
+				errs <- err
+				return
+			}
 		}
 		stream := p.client.Chat.Completions.NewStreaming(ctx, req)
 
