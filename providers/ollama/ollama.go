@@ -11,6 +11,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -292,8 +293,9 @@ func (p *Provider) convertParams(params providers.CompletionParams) (*api.ChatRe
 		Options:  convertOptions(params),
 	}
 
-	if len(params.Tools) > 0 {
-		req.Tools = convertTools(params.Tools)
+	req.Tools, err = convertTools(params.Tools)
+	if err != nil {
+		return nil, err
 	}
 
 	if params.ResponseFormat != nil {
@@ -794,54 +796,91 @@ func convertToolCalls(toolCalls []api.ToolCall) []providers.ToolCall {
 }
 
 // convertTools converts provider tools to Ollama format.
-func convertTools(tools []providers.Tool) api.Tools {
+func convertTools(tools []providers.Tool) (api.Tools, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+
 	result := make(api.Tools, 0, len(tools))
 
 	for _, tool := range tools {
-		params := api.ToolFunctionParameters{
-			Type: schemaTypeObject,
+		if tool.Type != toolTypeFunction {
+			return nil, errors.NewUnsupportedParamError(providerName, "tools.type")
 		}
-
-		// Convert properties.
-		if props, ok := tool.Function.Parameters[schemaKeyProperties].(map[string]any); ok {
-			propsMap := api.NewToolPropertiesMap()
-			for name, prop := range props {
-				if propMap, ok := prop.(map[string]any); ok {
-					tp := api.ToolProperty{}
-					if t, ok := propMap[schemaKeyType].(string); ok {
-						tp.Type = api.PropertyType{t}
-					}
-					if d, ok := propMap[schemaKeyDescription].(string); ok {
-						tp.Description = d
-					}
-					propsMap.Set(name, tp)
-				}
-			}
-			params.Properties = propsMap
+		if tool.Function.Name == "" {
+			return nil, errors.NewInvalidRequestError(providerName, stderrors.New("tool requires a function name"))
 		}
-
-		// Convert required fields.
-		if req, ok := tool.Function.Parameters[schemaKeyRequired].([]any); ok {
-			for _, r := range req {
-				if s, ok := r.(string); ok {
-					params.Required = append(params.Required, s)
-				}
-			}
+		parameters, err := convertToolParameters(tool.Function.Parameters)
+		if err != nil {
+			return nil, err
 		}
-
-		ollamaTool := api.Tool{
+		result = append(result, api.Tool{
 			Type: toolTypeFunction,
 			Function: api.ToolFunction{
 				Name:        tool.Function.Name,
 				Description: tool.Function.Description,
-				Parameters:  params,
+				Parameters:  parameters,
 			},
-		}
-
-		result = append(result, ollamaTool)
+		})
 	}
 
-	return result
+	return result, nil
+}
+
+func convertToolParameters(parameters map[string]any) (api.ToolFunctionParameters, error) {
+	if parameters == nil {
+		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
+			providerName,
+			stderrors.New("tool requires a parameters schema"),
+		)
+	}
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
+			providerName,
+			fmt.Errorf("tool schema must be valid JSON: %w", err),
+		)
+	}
+
+	var converted api.ToolFunctionParameters
+	if unmarshalErr := json.Unmarshal(encoded, &converted); unmarshalErr != nil {
+		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
+			providerName,
+			fmt.Errorf("tool schema is invalid: %w", unmarshalErr),
+		)
+	}
+	var normalized map[string]any
+	if unmarshalErr := json.Unmarshal(encoded, &normalized); unmarshalErr != nil {
+		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
+			providerName,
+			fmt.Errorf("tool schema cannot be compared: %w", unmarshalErr),
+		)
+	}
+
+	// https://docs.ollama.com/api/chat accepts JSON Schema, while the Go SDK
+	// exposes a typed subset. Reject schemas the SDK would silently weaken.
+	roundTripJSON, err := json.Marshal(converted)
+	if err != nil {
+		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
+			providerName,
+			fmt.Errorf("tool schema cannot be encoded: %w", err),
+		)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal(roundTripJSON, &roundTrip); err != nil {
+		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
+			providerName,
+			fmt.Errorf("tool schema cannot be compared: %w", err),
+		)
+	}
+	if !reflect.DeepEqual(normalized, roundTrip) {
+		return api.ToolFunctionParameters{}, errors.NewUnsupportedParamError(
+			providerName,
+			"tools.function.parameters",
+		)
+	}
+
+	return converted, nil
 }
 
 // extractThinking extracts thinking content from response.

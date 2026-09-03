@@ -266,6 +266,10 @@ func TestConvertMessageImages(t *testing.T) {
 func TestConvertTools(t *testing.T) {
 	t.Parallel()
 
+	empty, err := convertTools(nil)
+	require.NoError(t, err)
+	require.Nil(t, empty)
+
 	tools := []providers.Tool{
 		{
 			Type: toolTypeFunction,
@@ -273,26 +277,119 @@ func TestConvertTools(t *testing.T) {
 				Name:        "get_weather",
 				Description: "Get the current weather",
 				Parameters: map[string]any{
-					schemaKeyType: schemaTypeObject,
-					schemaKeyProperties: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
 						"location": map[string]any{
-							schemaKeyType:        "string",
-							schemaKeyDescription: "The city name",
+							"type":        "string",
+							"description": "The city name",
 						},
 					},
-					schemaKeyRequired: []any{"location"},
+					"required": []any{"location"},
 				},
 			},
 		},
 	}
 
-	result := convertTools(tools)
+	result, err := convertTools(tools)
+	require.NoError(t, err)
 
-	require.Len(t, result, 1)
-	require.Equal(t, toolTypeFunction, result[0].Type)
-	require.Equal(t, "get_weather", result[0].Function.Name)
-	require.Equal(t, "Get the current weather", result[0].Function.Description)
-	require.Contains(t, result[0].Function.Parameters.Required, "location")
+	wire, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.JSONEq(t, `[{"type":"function","function":{
+		"name":"get_weather",
+		"description":"Get the current weather",
+		"parameters":{
+			"type":"object",
+			"required":["location"],
+			"properties":{"location":{"type":"string","description":"The city name"}}
+		}
+	}}]`, string(wire))
+}
+
+func TestConvertToolsRejectsInvalidDefinitions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		tool    providers.Tool
+		wantErr error
+	}{
+		{
+			name:    "unknown tool type",
+			tool:    providers.Tool{Type: "custom"},
+			wantErr: errors.ErrUnsupportedParam,
+		},
+		{
+			name: "missing function name",
+			tool: providers.Tool{
+				Type: toolTypeFunction,
+				Function: providers.Function{
+					Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+				},
+			},
+			wantErr: errors.ErrInvalidRequest,
+		},
+		{
+			name: "missing parameters schema",
+			tool: providers.Tool{
+				Type: toolTypeFunction, Function: providers.Function{Name: "get_weather"},
+			},
+			wantErr: errors.ErrInvalidRequest,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			converted, err := convertTools([]providers.Tool{testCase.tool})
+
+			require.Nil(t, converted)
+			require.ErrorIs(t, err, testCase.wantErr)
+		})
+	}
+}
+
+func TestConvertToolsRejectsInvalidOrLossySchemas(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		params  map[string]any
+		wantErr error
+	}{
+		{
+			name:    "unencodable schema",
+			params:  map[string]any{"type": make(chan int)},
+			wantErr: errors.ErrInvalidRequest,
+		},
+		{
+			name:    "invalid schema shape",
+			params:  map[string]any{"type": "object", "properties": []string{"not", "a", "mapping"}},
+			wantErr: errors.ErrInvalidRequest,
+		},
+		{
+			name:    "schema outside SDK subset",
+			params:  map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
+			wantErr: errors.ErrUnsupportedParam,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			converted, err := convertTools([]providers.Tool{{
+				Type: toolTypeFunction,
+				Function: providers.Function{
+					Name: "get_weather", Parameters: testCase.params,
+				},
+			}})
+
+			require.Nil(t, converted)
+			require.ErrorIs(t, err, testCase.wantErr)
+		})
+	}
 }
 
 func TestConvertToolCalls(t *testing.T) {
