@@ -70,6 +70,12 @@ type CompatibleConfig struct {
 	// function must not retain it beyond the call. Nil means no transformation.
 	ChatCompletionRequestTransform func(*openai.ChatCompletionNewParams)
 
+	// OpenAIMessageSchema enables OpenAI-specific message roles and content fields.
+	// Compatible providers leave this false until their own schemas have been
+	// verified because OpenAI compatibility does not imply message-schema parity.
+	// https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+	OpenAIMessageSchema bool
+
 	// RequireAPIKey indicates whether an API key is required.
 	RequireAPIKey bool
 
@@ -161,11 +167,14 @@ func (p *CompatibleProvider) Completion(
 	ctx context.Context,
 	params providers.CompletionParams,
 ) (*providers.ChatCompletion, error) {
-	if err := validateCompletionParams(params); err != nil {
+	converter := p.messageConverter()
+
+	err := validateCompletionParamsWith(params, converter)
+	if err != nil {
 		return nil, err
 	}
 
-	req := convertParams(params)
+	req := convertParamsWith(params, converter)
 	if p.compatibleConfig.ChatCompletionRequestTransform != nil {
 		p.compatibleConfig.ChatCompletionRequestTransform(&req)
 	}
@@ -190,12 +199,15 @@ func (p *CompatibleProvider) CompletionStream(
 		defer close(chunks)
 		defer close(errs)
 
-		if err := validateCompletionParams(params); err != nil {
+		converter := p.messageConverter()
+
+		err := validateCompletionParamsWith(params, converter)
+		if err != nil {
 			errs <- err
 			return
 		}
 
-		req := convertParams(params)
+		req := convertParamsWith(params, converter)
 		if p.compatibleConfig.ChatCompletionRequestTransform != nil {
 			p.compatibleConfig.ChatCompletionRequestTransform(&req)
 		}
@@ -440,7 +452,14 @@ func convertEmbeddingResponse(resp *openai.CreateEmbeddingResponse) *providers.E
 
 // convertParams converts providers.CompletionParams to OpenAI request parameters.
 func convertParams(params providers.CompletionParams) openai.ChatCompletionNewParams {
-	messages, _ := convertMessages(params.Messages) // Error already checked in validateCompletionParams
+	return convertParamsWith(params, convertOpenAIMessage)
+}
+
+func convertParamsWith(
+	params providers.CompletionParams,
+	converter chatCompletionMessageConverter,
+) openai.ChatCompletionNewParams {
+	messages, _ := convertMessagesWith(params.Messages, converter) // Error already checked during validation.
 
 	req := openai.ChatCompletionNewParams{
 		Model:    openai.ChatModel(params.Model),
@@ -658,6 +677,13 @@ func validateCompatibleConfig(cfg CompatibleConfig) error {
 
 // validateCompletionParams validates completion parameters.
 func validateCompletionParams(params providers.CompletionParams) error {
+	return validateCompletionParamsWith(params, convertOpenAIMessage)
+}
+
+func validateCompletionParamsWith(
+	params providers.CompletionParams,
+	converter chatCompletionMessageConverter,
+) error {
 	if params.Model == "" {
 		return errors.NewInvalidRequestError("", fmt.Errorf("model is required"))
 	}
@@ -667,7 +693,8 @@ func validateCompletionParams(params providers.CompletionParams) error {
 
 	// Validate message roles.
 	for _, msg := range params.Messages {
-		if _, err := convertMessage(msg); err != nil {
+		_, err := converter(msg)
+		if err != nil {
 			return errors.NewInvalidRequestError("", err)
 		}
 	}

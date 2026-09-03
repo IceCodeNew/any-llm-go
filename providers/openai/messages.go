@@ -14,6 +14,8 @@ const (
 	contentTypeText     = "text"
 )
 
+type chatCompletionMessageConverter func(providers.Message) (openai.ChatCompletionMessageParamUnion, error)
+
 // convertAssistantMessage converts an assistant message to OpenAI format.
 func convertAssistantMessage(msg providers.Message) openai.ChatCompletionMessageParamUnion {
 	if len(msg.ToolCalls) > 0 {
@@ -57,11 +59,22 @@ func convertMessage(msg providers.Message) (openai.ChatCompletionMessageParamUni
 	}
 }
 
-// convertMessages converts provider messages to OpenAI format.
-func convertMessages(messages []providers.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+func convertOpenAIMessage(msg providers.Message) (openai.ChatCompletionMessageParamUnion, error) {
+	return convertMessage(msg)
+}
+
+func convertCompatibleMessage(msg providers.Message) (openai.ChatCompletionMessageParamUnion, error) {
+	return convertMessage(msg)
+}
+
+// convertMessagesWith converts provider messages with the selected provider schema.
+func convertMessagesWith(
+	messages []providers.Message,
+	converter chatCompletionMessageConverter,
+) ([]openai.ChatCompletionMessageParamUnion, error) {
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, msg := range messages {
-		converted, err := convertMessage(msg)
+		converted, err := converter(msg)
 		if err != nil {
 			return nil, err
 		}
@@ -89,4 +102,12 @@ func convertUserMessage(msg providers.Message) openai.ChatCompletionMessageParam
 		return openai.UserMessage(parts)
 	}
 	return openai.UserMessage(msg.ContentString())
+}
+
+func (p *CompatibleProvider) messageConverter() chatCompletionMessageConverter {
+	if p.compatibleConfig.OpenAIMessageSchema {
+		return convertOpenAIMessage
+	}
+
+	return convertCompatibleMessage
 }
