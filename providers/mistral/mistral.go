@@ -4,7 +4,6 @@ package mistral
 
 import (
 	"context"
-	"slices"
 
 	oaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
@@ -93,7 +92,7 @@ func capabilities() providers.Capabilities {
 		Completion:          true,
 		CompletionImage:     true, // Pixtral models support vision.
 		CompletionPDF:       false,
-		CompletionReasoning: true, // Magistral models support reasoning.
+		CompletionReasoning: true, // Current Mistral models support adjustable reasoning.
 		CompletionStreaming: true,
 		CompletionTools:     true,
 		Embedding:           true, // mistral-embed model.
@@ -134,10 +133,15 @@ func patchMessages(messages []providers.Message) []providers.Message {
 	return result
 }
 
-// patchMessageParams handles Mistral's message-level requirements.
-// Mistral requires an assistant message between tool results and user messages.
+// patchMessageParams handles Mistral fields before shared request conversion.
 func patchMessageParams(params providers.CompletionParams) providers.CompletionParams {
-	params.Messages = patchMessages(slices.Clone(params.Messages))
+	params.Messages = patchMessages(params.Messages)
+	// Mistral calls its highest documented effort xhigh. Map the binding's
+	// provider-neutral max value instead of sending an invalid wire enum.
+	// https://docs.mistral.ai/api/endpoint/chat
+	if params.ReasoningEffort == providers.ReasoningEffortMax {
+		params.ReasoningEffort = providers.ReasoningEffortXHigh
+	}
 	return params
 }
 
@@ -150,5 +154,4 @@ func transformRequest(req *oaisdk.ChatCompletionNewParams) {
 	}
 	req.MaxCompletionTokens = param.Opt[int64]{}
 	req.User = param.Opt[string]{}
-	req.ReasoningEffort = ""
 }
