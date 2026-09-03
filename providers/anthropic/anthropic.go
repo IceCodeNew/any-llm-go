@@ -216,7 +216,10 @@ func (p *Provider) convertParams(params providers.CompletionParams) (anthropic.M
 
 	applyResponseFormat(&req, params.ResponseFormat)
 
-	applyThinking(&req, params.ReasoningEffort, maxTokens)
+	err := applyThinking(&req, params.ReasoningEffort)
+	if err != nil {
+		return anthropic.MessageNewParams{}, err
+	}
 
 	return req, nil
 }
@@ -379,24 +382,37 @@ func (s *streamState) handleTextDelta(text string) *providers.ChatCompletionChun
 	return &chunk
 }
 
-// applyThinking configures thinking/reasoning on the request if applicable.
-func applyThinking(req *anthropic.MessageNewParams, effort providers.ReasoningEffort, maxTokens int64) {
-	if effort == "" || effort == providers.ReasoningEffortNone {
-		return
+// applyThinking configures the current adaptive-thinking contract.
+func applyThinking(req *anthropic.MessageNewParams, effort providers.ReasoningEffort) error {
+	switch effort {
+	case "":
+		return nil
+	case providers.ReasoningEffortNone:
+		req.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfDisabled: new(anthropic.NewThinkingConfigDisabledParam()),
+		}
+
+		return nil
+	case providers.ReasoningEffortAuto:
+		req.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}}
+
+		return nil
+	case "minimal":
+		effort = "low"
+	case providers.ReasoningEffortLow, providers.ReasoningEffortMedium, providers.ReasoningEffortHigh,
+		"xhigh", "max":
+	default:
+		return errors.NewUnsupportedParamError(providerName, "reasoning_effort="+string(effort))
 	}
 
-	budget, ok := thinkingBudget(effort)
-	if !ok {
-		return
-	}
+	// Anthropic's current models select adaptive thinking explicitly and control
+	// its depth through output_config.effort. max_tokens remains an independent
+	// cap on thinking plus response output, so this conversion preserves the caller's value.
+	// https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
+	req.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}}
+	req.OutputConfig.Effort = anthropic.OutputConfigEffort(effort)
 
-	req.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
-
-	// Increase max tokens to accommodate thinking.
-	minTokens := budget * 2
-	if maxTokens < minTokens {
-		req.MaxTokens = minTokens
-	}
+	return nil
 }
 
 // applyResponseFormat configures structured output on the request if applicable.
@@ -697,21 +713,6 @@ func convertUserMessage(msg providers.Message) *anthropic.MessageParam {
 	}
 	m := anthropic.NewUserMessage(content...)
 	return &m
-}
-
-// thinkingBudget returns the token budget for the given reasoning effort.
-// Returns the budget and true if the effort level is supported, or 0 and false otherwise.
-func thinkingBudget(effort providers.ReasoningEffort) (int64, bool) {
-	switch effort {
-	case providers.ReasoningEffortLow:
-		return 1024, true
-	case providers.ReasoningEffortMedium:
-		return 4096, true
-	case providers.ReasoningEffortHigh:
-		return 16384, true
-	default:
-		return 0, false
-	}
 }
 
 // toStringSlice converts a value to []string.

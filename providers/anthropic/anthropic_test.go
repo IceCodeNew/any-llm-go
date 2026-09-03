@@ -18,6 +18,8 @@ import (
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
 
+const adaptiveThinkingJSON = `{"type":"adaptive"}`
+
 func TestNew(t *testing.T) {
 	t.Run("creates provider with API key", func(t *testing.T) {
 		provider, err := New(config.WithAPIKey("test-api-key"))
@@ -340,60 +342,66 @@ func TestApplyThinking(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name              string
-		effort            providers.ReasoningEffort
-		initialMaxTokens  int64
-		expectedMaxTokens int64
-		expectThinking    bool
+		name             string
+		effort           providers.ReasoningEffort
+		expectedThinking string
+		expectedEffort   string
+		wantError        bool
 	}{
 		{
-			name:              "empty effort does nothing",
-			effort:            "",
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 1000,
-			expectThinking:    false,
+			name:   "omitted effort remains omitted",
+			effort: "",
 		},
 		{
-			name:              "ReasoningEffortNone does nothing",
-			effort:            providers.ReasoningEffortNone,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 1000,
-			expectThinking:    false,
+			name:             "none disables thinking explicitly",
+			effort:           providers.ReasoningEffortNone,
+			expectedThinking: `{"type":"disabled"}`,
 		},
 		{
-			name:              "invalid effort does nothing",
-			effort:            "invalid",
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 1000,
-			expectThinking:    false,
+			name:             "auto selects adaptive thinking without an effort",
+			effort:           providers.ReasoningEffortAuto,
+			expectedThinking: adaptiveThinkingJSON,
 		},
 		{
-			name:              "low effort increases tokens when insufficient",
-			effort:            providers.ReasoningEffortLow,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 2048, // budget=1024, min=2048
-			expectThinking:    true,
+			name:             "minimal maps to the lowest Anthropic effort",
+			effort:           "minimal",
+			expectedThinking: adaptiveThinkingJSON,
+			expectedEffort:   `{"effort":"low"}`,
 		},
 		{
-			name:              "low effort preserves tokens when sufficient",
-			effort:            providers.ReasoningEffortLow,
-			initialMaxTokens:  10000,
-			expectedMaxTokens: 10000,
-			expectThinking:    true,
+			name:             "low remains low",
+			effort:           providers.ReasoningEffortLow,
+			expectedThinking: adaptiveThinkingJSON,
+			expectedEffort:   `{"effort":"low"}`,
 		},
 		{
-			name:              "medium effort increases tokens when insufficient",
-			effort:            providers.ReasoningEffortMedium,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 8192, // budget=4096, min=8192
-			expectThinking:    true,
+			name:             "medium remains medium",
+			effort:           providers.ReasoningEffortMedium,
+			expectedThinking: adaptiveThinkingJSON,
+			expectedEffort:   `{"effort":"medium"}`,
 		},
 		{
-			name:              "high effort increases tokens when insufficient",
-			effort:            providers.ReasoningEffortHigh,
-			initialMaxTokens:  1000,
-			expectedMaxTokens: 32768, // budget=16384, min=32768
-			expectThinking:    true,
+			name:             "high remains high",
+			effort:           providers.ReasoningEffortHigh,
+			expectedThinking: adaptiveThinkingJSON,
+			expectedEffort:   `{"effort":"high"}`,
+		},
+		{
+			name:             "xhigh remains xhigh",
+			effort:           "xhigh",
+			expectedThinking: adaptiveThinkingJSON,
+			expectedEffort:   `{"effort":"xhigh"}`,
+		},
+		{
+			name:             "max remains max",
+			effort:           "max",
+			expectedThinking: adaptiveThinkingJSON,
+			expectedEffort:   `{"effort":"max"}`,
+		},
+		{
+			name:      "unknown effort is rejected",
+			effort:    "invalid",
+			wantError: true,
 		},
 	}
 
@@ -401,11 +409,35 @@ func TestApplyThinking(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := &anthropic.MessageNewParams{MaxTokens: tc.initialMaxTokens}
-			applyThinking(req, tc.effort, tc.initialMaxTokens)
-			require.Equal(t, tc.expectedMaxTokens, req.MaxTokens)
-			if tc.expectThinking {
-				require.NotNil(t, req.Thinking)
+			req := new(anthropic.MessageNewParams)
+			req.MaxTokens = 1000
+			err := applyThinking(req, tc.effort)
+
+			if tc.wantError {
+				require.Error(t, err)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.EqualValues(t, 1000, req.MaxTokens)
+
+			body, err := json.Marshal(req)
+			require.NoError(t, err)
+
+			var wire map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(body, &wire))
+
+			if tc.expectedThinking == "" {
+				require.NotContains(t, wire, "thinking")
+			} else {
+				require.JSONEq(t, tc.expectedThinking, string(wire["thinking"]))
+			}
+
+			if tc.expectedEffort == "" {
+				require.NotContains(t, wire, "output_config")
+			} else {
+				require.JSONEq(t, tc.expectedEffort, string(wire["output_config"]))
 			}
 		})
 	}
@@ -679,58 +711,6 @@ func TestConvertTool(t *testing.T) {
 		require.Contains(t, err.Error(), "mixed_required")
 		require.Contains(t, err.Error(), "element 1")
 	})
-}
-
-func TestThinkingBudget(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		effort   providers.ReasoningEffort
-		expected int64
-		ok       bool
-	}{
-		{
-			name:     "low effort",
-			effort:   providers.ReasoningEffortLow,
-			expected: 1024,
-			ok:       true,
-		},
-		{
-			name:     "medium effort",
-			effort:   providers.ReasoningEffortMedium,
-			expected: 4096,
-			ok:       true,
-		},
-		{
-			name:     "high effort",
-			effort:   providers.ReasoningEffortHigh,
-			expected: 16384,
-			ok:       true,
-		},
-		{
-			name:     "none effort",
-			effort:   providers.ReasoningEffortNone,
-			expected: 0,
-			ok:       false,
-		},
-		{
-			name:     "invalid effort",
-			effort:   "invalid",
-			expected: 0,
-			ok:       false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			budget, ok := thinkingBudget(tc.effort)
-			require.Equal(t, tc.ok, ok)
-			require.Equal(t, tc.expected, budget)
-		})
-	}
 }
 
 func TestToStringSlice(t *testing.T) {
@@ -1405,6 +1385,26 @@ func TestConvertParams_ResponseFormat(t *testing.T) {
 		result, err := p.convertParams(params)
 		require.NoError(t, err)
 		require.Equal(t, schema, result.OutputConfig.Format.Schema)
+	})
+
+	t.Run("adaptive effort preserves the structured output format", func(t *testing.T) {
+		t.Parallel()
+
+		params := baseParams()
+		params.ReasoningEffort = providers.ReasoningEffortHigh
+		params.ResponseFormat = &providers.ResponseFormat{
+			Type: responseFormatJSONSchema,
+			JSONSchema: &providers.JSONSchema{
+				Name:   "answer_schema",
+				Schema: schema,
+			},
+		}
+
+		result, err := p.convertParams(params)
+		require.NoError(t, err)
+		require.Equal(t, schema, result.OutputConfig.Format.Schema)
+		require.Equal(t, anthropic.OutputConfigEffortHigh, result.OutputConfig.Effort)
+		require.NotNil(t, result.Thinking.OfAdaptive)
 	})
 
 	t.Run("unsupported JSONSchema fields are not forwarded", func(t *testing.T) {
