@@ -63,6 +63,82 @@ func TestCompletionPreservesNullableContent(t *testing.T) {
 	require.Nil(t, completion.Choices[0].Message.Content)
 }
 
+func TestCompletionPreservesCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	serverURL, _ := deepSeekCompletionServer(t, `{
+		"id":"chatcmpl-test","object":"chat.completion","created":1700000000,
+		"model":"deepseek-v4-pro","choices":[{"index":0,"message":{
+			"role":"assistant","content":"answer"
+		},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5,
+		"total_tokens":13,"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":5}
+	}`)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	completion, err := provider.Completion(t.Context(), providers.CompletionParams{
+		Model:    "deepseek-v4-pro",
+		Messages: testutil.SimpleMessages(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, &providers.Usage{
+		PromptTokens:     8,
+		CompletionTokens: 5,
+		TotalTokens:      13,
+		CachedTokens:     3,
+	}, completion.Usage)
+}
+
+func TestCompletionPreservesPresentZeroCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	serverURL, _ := deepSeekCompletionServer(t, `{
+		"id":"chatcmpl-test","object":"chat.completion","created":1700000000,
+		"model":"deepseek-v4-pro","choices":[{"index":0,"message":{
+			"role":"assistant","content":"answer"
+		},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,
+		"total_tokens":0,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":0}
+	}`)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	completion, err := provider.Completion(t.Context(), providers.CompletionParams{
+		Model:    "deepseek-v4-pro",
+		Messages: testutil.SimpleMessages(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, &providers.Usage{}, completion.Usage)
+}
+
+func TestCompletionRejectsMalformedCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	serverURL, _ := deepSeekCompletionServer(t, `{
+		"id":"chatcmpl-test","object":"chat.completion","created":1700000000,
+		"model":"deepseek-v4-pro","choices":[{"index":0,"message":{
+			"role":"assistant","content":"answer"
+		},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5,
+		"total_tokens":13,"prompt_cache_hit_tokens":"3","prompt_cache_miss_tokens":5}
+	}`)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	_, err = provider.Completion(t.Context(), providers.CompletionParams{
+		Model:    "deepseek-v4-pro",
+		Messages: testutil.SimpleMessages(),
+	})
+	require.ErrorContains(t, err, "decoding DeepSeek usage")
+}
+
 func TestCompletionRejectsMalformedContent(t *testing.T) {
 	t.Parallel()
 
@@ -152,7 +228,42 @@ func TestCompletionStreamPreservesReasoningAndTerminalUsage(t *testing.T) {
 	require.Equal(t, "reasoning", chunks[0].Choices[0].Delta.Reasoning.Content)
 	require.Equal(t, "answer", chunks[1].Choices[0].Delta.Content)
 	require.Equal(t, "stop", chunks[2].Choices[0].FinishReason)
-	require.Equal(t, &providers.Usage{PromptTokens: 8, CompletionTokens: 5, TotalTokens: 13}, chunks[2].Usage)
+	require.Equal(t, &providers.Usage{
+		PromptTokens:     8,
+		CompletionTokens: 5,
+		TotalTokens:      13,
+		CachedTokens:     3,
+	}, chunks[2].Usage)
+}
+
+func TestCompletionStreamRejectsMalformedCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, err := fmt.Fprint(w, `data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13,"prompt_cache_hit_tokens":"3","prompt_cache_miss_tokens":5}}
+
+data: [DONE]
+
+`)
+		if err != nil {
+			t.Errorf("writing DeepSeek stream: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(server.URL),
+	)
+	require.NoError(t, err)
+
+	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{
+		Model:    "deepseek-v4-pro",
+		Messages: testutil.SimpleMessages(),
+	})
+	for range chunks {
+	}
+	require.ErrorContains(t, <-errs, "decoding DeepSeek usage")
 }
 
 func TestCompletionMapsDocumentedDeepSeekErrors(t *testing.T) {
