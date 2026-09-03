@@ -8,9 +8,6 @@ import (
 	"fmt"
 	"slices"
 
-	oaisdk "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/packages/param"
-
 	"github.com/mozilla-ai/any-llm-go/config"
 	"github.com/mozilla-ai/any-llm-go/providers"
 	"github.com/mozilla-ai/any-llm-go/providers/openai"
@@ -95,7 +92,7 @@ func capabilities() providers.Capabilities {
 		Completion:          true,
 		CompletionImage:     false, // DeepSeek doesn't support images.
 		CompletionPDF:       false,
-		CompletionReasoning: true, // DeepSeek R1 supports reasoning.
+		CompletionReasoning: true, // DeepSeek V4 supports reasoning.
 		CompletionStreaming: true,
 		CompletionTools:     true,
 		Embedding:           false, // DeepSeek doesn't host embedding models.
@@ -158,15 +155,6 @@ func preprocessParams(params providers.CompletionParams) providers.CompletionPar
 		User:            params.User,
 		Extra:           params.Extra,
 	}
-}
-
-// transformRequest maps the shared token limit to DeepSeek's max_tokens field.
-// https://api-docs.deepseek.com/api/create-chat-completion
-func transformRequest(req *oaisdk.ChatCompletionNewParams) {
-	if req.MaxCompletionTokens.Valid() {
-		req.MaxTokens = oaisdk.Int(req.MaxCompletionTokens.Value)
-	}
-	req.MaxCompletionTokens = param.Opt[int64]{}
 }
 
 // preprocessMessagesForJSONSchema injects the JSON schema into the last user message.
