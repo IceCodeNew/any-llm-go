@@ -53,6 +53,7 @@ func New(opts ...config.Option) (*Provider, error) {
 		APIKeyEnvVar:                    envAPIKey,
 		BaseURLEnvVar:                   "",
 		Capabilities:                    capabilities(),
+		ChatCompletionChunkTransform:    transformChunk,
 		ChatCompletionRequestTransform:  transformRequest,
 		ChatCompletionResponseTransform: transformResponse,
 		DefaultAPIKey:                   "",

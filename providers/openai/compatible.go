@@ -59,6 +59,10 @@ type CompatibleConfig struct {
 	// Capabilities describes what the provider supports.
 	Capabilities providers.Capabilities
 
+	// ChatCompletionChunkTransform adapts provider-specific streaming fields
+	// after the SDK and shared converter preserve each chunk.
+	ChatCompletionChunkTransform func(*openai.ChatCompletionChunk, *providers.ChatCompletionChunk) error
+
 	// ChatCompletionResponseTransform adapts provider-specific response fields
 	// after the SDK and shared converter preserve the response envelope.
 	ChatCompletionResponseTransform func(*openai.ChatCompletion, *providers.ChatCompletion) error
@@ -222,8 +226,18 @@ func (p *CompatibleProvider) CompletionStream(
 
 		for stream.Next() {
 			chunk := stream.Current()
+			result := convertChunk(&chunk)
+			chunkTransform := p.compatibleConfig.ChatCompletionChunkTransform
+			if chunkTransform != nil {
+				transformErr := chunkTransform(&chunk, &result)
+				if transformErr != nil {
+					errs <- transformErr
+					return
+				}
+			}
+
 			select {
-			case chunks <- convertChunk(&chunk):
+			case chunks <- result:
 			case <-ctx.Done():
 				// Caller cancelled mid-stream; surface ctx.Err() so the
 				// consumer can tell a cancelled stream apart from one

@@ -87,6 +87,38 @@ func transformResponse(source *oaisdk.ChatCompletion, result *providers.ChatComp
 	return nil
 }
 
+// transformChunk projects Mistral's streamed content union while retaining
+// each complete array for replay in a later assistant message.
+// https://docs.mistral.ai/studio-api/conversations/reasoning
+func transformChunk(source *oaisdk.ChatCompletionChunk, result *providers.ChatCompletionChunk) error {
+	for choiceIndex, choice := range source.Choices {
+		var delta responseMessage
+		err := json.Unmarshal([]byte(choice.Delta.RawJSON()), &delta)
+		if err != nil {
+			return fmt.Errorf("decoding Mistral choice %d delta: %w", choiceIndex, err)
+		}
+
+		content, reasoning, chunked, err := decodeContent(delta.Content)
+		if err != nil {
+			return fmt.Errorf("decoding Mistral choice %d delta content: %w", choiceIndex, err)
+		}
+
+		if !chunked {
+			continue
+		}
+
+		if content == nil {
+			result.Choices[choiceIndex].Delta.Content = ""
+		} else {
+			result.Choices[choiceIndex].Delta.Content = *content
+		}
+
+		result.Choices[choiceIndex].Delta.Reasoning = reasoning
+	}
+
+	return nil
+}
+
 func decodeContent(
 	raw json.RawMessage,
 ) (*string, *providers.Reasoning, bool, error) {
