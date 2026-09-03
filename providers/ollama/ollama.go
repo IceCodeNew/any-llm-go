@@ -24,7 +24,6 @@ import (
 // Provider configuration constants.
 const (
 	defaultBaseURL = "http://localhost:11434"
-	defaultNumCtx  = 32000
 	envBaseURL     = "OLLAMA_HOST"
 	providerName   = "ollama"
 )
@@ -37,7 +36,6 @@ const (
 
 // Ollama option keys.
 const (
-	optionNumCtx      = "num_ctx"
 	optionNumPredict  = "num_predict"
 	optionSeed        = "seed"
 	optionStop        = "stop"
@@ -304,19 +302,26 @@ func (p *Provider) convertParams(params providers.CompletionParams) (*api.ChatRe
 		}
 	}
 
-	// Handle reasoning/thinking.
-	if params.ReasoningEffort != "" &&
-		params.ReasoningEffort != providers.ReasoningEffortNone &&
-		params.ReasoningEffort != providers.ReasoningEffortAuto {
-		think := api.ThinkValue{Value: true}
-		req.Think = &think
+	// https://docs.ollama.com/api/chat defines think as a boolean or one of
+	// low, medium, high, and max. Preserve "none" as false on that wire type.
+	switch params.ReasoningEffort {
+	case "", providers.ReasoningEffortAuto:
+	case providers.ReasoningEffortNone:
+		req.Think = new(api.ThinkValue{Value: false})
+	case providers.ReasoningEffortLow,
+		providers.ReasoningEffortMedium,
+		providers.ReasoningEffortHigh,
+		providers.ReasoningEffort("max"):
+		req.Think = new(api.ThinkValue{Value: string(params.ReasoningEffort)})
+	default:
+		return nil, errors.NewUnsupportedParamError(providerName, "reasoning_effort")
 	}
 
 	return req, nil
 }
 
 func convertOptions(params providers.CompletionParams) map[string]any {
-	options := map[string]any{optionNumCtx: defaultNumCtx}
+	options := make(map[string]any)
 	if params.Temperature != nil {
 		options[optionTemperature] = *params.Temperature
 	}

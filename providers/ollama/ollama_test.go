@@ -88,6 +88,47 @@ func TestCapabilities(t *testing.T) {
 	require.True(t, caps.ListModels)
 }
 
+func TestConvertParamsPreservesReasoningAndModelDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		effort   providers.ReasoningEffort
+		wantJSON string
+		wantErr  error
+	}{
+		{name: "unset", wantJSON: "null"},
+		{name: "auto", effort: providers.ReasoningEffortAuto, wantJSON: "null"},
+		{name: "none", effort: providers.ReasoningEffortNone, wantJSON: "false"},
+		{name: "low", effort: providers.ReasoningEffortLow, wantJSON: `"low"`},
+		{name: "medium", effort: providers.ReasoningEffortMedium, wantJSON: `"medium"`},
+		{name: "high", effort: providers.ReasoningEffortHigh, wantJSON: `"high"`},
+		{name: "max", effort: providers.ReasoningEffort("max"), wantJSON: `"max"`},
+		{name: "unsupported", effort: providers.ReasoningEffort("xhigh"), wantErr: errors.ErrUnsupportedParam},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			request, err := (&Provider{}).convertParams(providers.CompletionParams{
+				ReasoningEffort: testCase.effort,
+			})
+			if testCase.wantErr != nil {
+				require.Nil(t, request)
+				require.ErrorIs(t, err, testCase.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Empty(t, request.Options)
+			encoded, err := json.Marshal(request.Think)
+			require.NoError(t, err)
+			require.Equal(t, testCase.wantJSON, string(encoded))
+		})
+	}
+}
+
 func TestConvertMessagesPreservesToolResultNameAndReasoning(t *testing.T) {
 	t.Parallel()
 
