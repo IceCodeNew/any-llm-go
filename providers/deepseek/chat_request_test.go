@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/mozilla-ai/any-llm-go/config"
+	llmerrors "github.com/mozilla-ai/any-llm-go/errors"
+	"github.com/mozilla-ai/any-llm-go/internal/testutil"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
 
@@ -153,4 +156,86 @@ func TestCompletionOmitsReasoningReplayWithoutTools(t *testing.T) {
 	assistant, ok := messages[0].(map[string]any)
 	require.True(t, ok)
 	require.NotContains(t, assistant, "reasoning_content")
+}
+
+func TestCompletionStreamMapsCurrentThinkingRequest(t *testing.T) {
+	t.Parallel()
+
+	serverURL, capturedBody := testutil.FakeStreamingServer(t)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{
+		Model:           "deepseek-v4-flash",
+		Messages:        testutil.SimpleMessages(),
+		ReasoningEffort: providers.ReasoningEffortMax,
+		User:            "account_42",
+	})
+	for range chunks {
+	}
+	require.NoError(t, <-errs)
+
+	body := capturedBody()
+	require.Equal(t, map[string]any{"type": "enabled"}, body["thinking"])
+	require.Equal(t, "max", body["reasoning_effort"])
+	require.Equal(t, "account_42", body["user_id"])
+	require.NotContains(t, body, "user")
+}
+
+func TestCompletionRejectsUnsupportedParamsBeforeTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		params providers.CompletionParams
+		want   error
+	}{
+		{
+			name: "unknown reasoning effort",
+			params: providers.CompletionParams{
+				ReasoningEffort: providers.ReasoningEffort("unsupported"),
+			},
+			want: llmerrors.ErrInvalidRequest,
+		},
+		{
+			name:   "parallel tool calls",
+			params: providers.CompletionParams{ParallelToolCalls: new(false)},
+			want:   llmerrors.ErrUnsupportedParam,
+		},
+		{
+			name:   "seed",
+			params: providers.CompletionParams{Seed: new(7)},
+			want:   llmerrors.ErrUnsupportedParam,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				requests.Add(1)
+			}))
+			t.Cleanup(server.Close)
+			provider, err := New(
+				config.WithAPIKey("test-key"),
+				config.WithBaseURL(server.URL),
+			)
+			require.NoError(t, err)
+
+			test.params.Model = "deepseek-v4-pro"
+			test.params.Messages = testutil.SimpleMessages()
+			_, err = provider.Completion(t.Context(), test.params)
+			require.ErrorIs(t, err, test.want)
+
+			chunks, errs := provider.CompletionStream(t.Context(), test.params)
+			for range chunks {
+			}
+			require.ErrorIs(t, <-errs, test.want)
+			require.Zero(t, requests.Load())
+		})
+	}
 }
