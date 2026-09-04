@@ -388,7 +388,8 @@ func convertChunk(chunk *openai.ChatCompletionChunk) providers.ChatCompletionChu
 	choices := make([]providers.ChunkChoice, 0, len(chunk.Choices))
 	for _, choice := range chunk.Choices {
 		chunkChoice := providers.ChunkChoice{
-			Index: int(choice.Index),
+			Index:    int(choice.Index),
+			Logprobs: convertLogprobs(choice.Logprobs.RawJSON(), choice.Logprobs.Content, choice.Logprobs.Refusal),
 			Delta: providers.ChunkDelta{
 				Role:    string(choice.Delta.Role),
 				Content: choice.Delta.Content,
@@ -547,6 +548,12 @@ func convertParams(params providers.CompletionParams) openai.ChatCompletionNewPa
 	if params.TopP != nil {
 		req.TopP = openai.Float(*params.TopP)
 	}
+	if params.Logprobs != nil {
+		req.Logprobs = openai.Bool(*params.Logprobs)
+	}
+	if params.TopLogprobs != nil {
+		req.TopLogprobs = openai.Int(int64(*params.TopLogprobs))
+	}
 
 	// OpenAI documents max_completion_tokens as the replacement for the
 	// deprecated max_tokens field. Keep the binding's existing MaxTokens
@@ -610,6 +617,7 @@ func convertResponse(resp *openai.ChatCompletion) *providers.ChatCompletion {
 			Index:        int(choice.Index),
 			Message:      convertResponseMessage(choice.Message),
 			FinishReason: string(choice.FinishReason),
+			Logprobs:     convertLogprobs(choice.Logprobs.RawJSON(), choice.Logprobs.Content, choice.Logprobs.Refusal),
 		})
 	}
 
@@ -636,6 +644,58 @@ func convertResponse(resp *openai.ChatCompletion) *providers.ChatCompletion {
 		}
 	}
 
+	return result
+}
+
+func convertLogprobs(
+	raw string,
+	content []openai.ChatCompletionTokenLogprob,
+	refusal []openai.ChatCompletionTokenLogprob,
+) *providers.ChatCompletionLogprobs {
+	if raw == "" || raw == "null" {
+		return nil
+	}
+
+	return &providers.ChatCompletionLogprobs{
+		Content: convertTokenLogprobs(content),
+		Refusal: convertTokenLogprobs(refusal),
+	}
+}
+
+func convertTokenLogprobs(source []openai.ChatCompletionTokenLogprob) []providers.ChatCompletionTokenLogprob {
+	if source == nil {
+		return nil
+	}
+
+	result := make([]providers.ChatCompletionTokenLogprob, 0, len(source))
+	for _, token := range source {
+		topLogprobs := make([]providers.ChatCompletionTopLogprob, 0, len(token.TopLogprobs))
+		for _, top := range token.TopLogprobs {
+			topLogprobs = append(topLogprobs, providers.ChatCompletionTopLogprob{
+				Token:   top.Token,
+				Bytes:   convertTokenBytes(top.Bytes),
+				Logprob: top.Logprob,
+			})
+		}
+		result = append(result, providers.ChatCompletionTokenLogprob{
+			Token:       token.Token,
+			Bytes:       convertTokenBytes(token.Bytes),
+			Logprob:     token.Logprob,
+			TopLogprobs: topLogprobs,
+		})
+	}
+	return result
+}
+
+func convertTokenBytes(source []int64) []int {
+	if source == nil {
+		return nil
+	}
+
+	result := make([]int, len(source))
+	for i, value := range source {
+		result[i] = int(value)
+	}
 	return result
 }
 
@@ -781,6 +841,14 @@ func validateCompletionParams(params providers.CompletionParams) error {
 	}
 	if len(params.Messages) == 0 {
 		return errors.NewInvalidRequestError("", fmt.Errorf("at least one message is required"))
+	}
+	if params.TopLogprobs != nil {
+		if *params.TopLogprobs < 0 || *params.TopLogprobs > 20 {
+			return errors.NewInvalidRequestError("", fmt.Errorf("top_logprobs must be between 0 and 20"))
+		}
+		if params.Logprobs == nil || !*params.Logprobs {
+			return errors.NewInvalidRequestError("", fmt.Errorf("top_logprobs requires logprobs to be true"))
+		}
 	}
 
 	// Validate message roles.
