@@ -15,6 +15,15 @@ type deepSeekThinking struct {
 	Type string `json:"type"`
 }
 
+type deepSeekVisionContentPart struct {
+	Type     string              `json:"type"`
+	Text     string              `json:"text,omitempty"`
+	ImageURL *providers.ImageURL `json:"image_url,omitempty"`
+	FileID   string              `json:"file_id,omitempty"`
+	FileData string              `json:"file_data,omitempty"`
+	Filename string              `json:"filename,omitempty"`
+}
+
 // transformRequest maps normalized controls to DeepSeek's current Chat schema.
 // https://api-docs.deepseek.com/api/create-chat-completion
 func transformRequest(
@@ -95,14 +104,16 @@ func transformVisionMessages(
 			)
 		}
 
+		wireParts := make([]deepSeekVisionContentPart, 0, len(message.ContentParts()))
 		for j, part := range message.ContentParts() {
 			switch part.Type {
 			case "text":
-				if part.ImageURL != nil {
-					return invalidVisionPart(i, j, "text content cannot include image_url")
+				if part.ImageURL != nil || part.File != nil {
+					return invalidVisionPart(i, j, "text content cannot include image_url or file")
 				}
+				wireParts = append(wireParts, deepSeekVisionContentPart{Type: part.Type, Text: part.Text})
 			case "image_url":
-				if part.ImageURL == nil || part.ImageURL.URL == "" || part.Text != "" {
+				if part.ImageURL == nil || part.ImageURL.URL == "" || part.Text != "" || part.File != nil {
 					return invalidVisionPart(i, j, "image_url content requires only a non-empty URL")
 				}
 				switch part.ImageURL.Detail {
@@ -110,12 +121,34 @@ func transformVisionMessages(
 				default:
 					return invalidVisionPart(i, j, fmt.Sprintf("unsupported image detail %q", part.ImageURL.Detail))
 				}
-				reqMessages[i].OfUser.Content.OfArrayOfContentParts[j].OfImageURL.ImageURL.Detail =
-					part.ImageURL.Detail
+				wireParts = append(wireParts, deepSeekVisionContentPart{Type: part.Type, ImageURL: part.ImageURL})
+			case "file":
+				if part.File == nil || part.Text != "" || part.ImageURL != nil {
+					return invalidVisionPart(i, j, "file content requires only file data")
+				}
+				hasFileID := part.File.FileID != ""
+				hasFileData := part.File.FileData != ""
+				if hasFileID == hasFileData {
+					return invalidVisionPart(i, j, "file content requires exactly one of file_id or file_data")
+				}
+				if hasFileID && part.File.Filename != "" {
+					return invalidVisionPart(i, j, "filename is only supported with file_data")
+				}
+				wireParts = append(wireParts, deepSeekVisionContentPart{
+					Type:     part.Type,
+					FileID:   part.File.FileID,
+					FileData: part.File.FileData,
+					Filename: part.File.Filename,
+				})
 			default:
 				return invalidVisionPart(i, j, fmt.Sprintf("unsupported content type %q", part.Type))
 			}
 		}
+
+		// openai-go models Chat file inputs under a nested file object. DeepSeek
+		// documents file_id and file_data beside type, so replace the generated
+		// content at the SDK's request-extension boundary.
+		reqMessages[i].OfUser.SetExtraFields(map[string]any{"content": wireParts})
 	}
 
 	return nil
