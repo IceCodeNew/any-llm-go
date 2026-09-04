@@ -106,6 +106,7 @@ type (
 // Message types.
 type (
 	ContentPart = providers.ContentPart
+	FileContent = providers.FileContent
 	ImageURL    = providers.ImageURL
 	Message     = providers.Message
 	Reasoning   = providers.Reasoning

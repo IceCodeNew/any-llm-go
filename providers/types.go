@@ -172,9 +172,17 @@ type CompletionParams struct {
 
 // ContentPart represents a part of a multi-modal message.
 type ContentPart struct {
-	Type     string    `json:"type"`
-	Text     string    `json:"text,omitempty"`
-	ImageURL *ImageURL `json:"image_url,omitempty"`
+	Type     string       `json:"type"`
+	Text     string       `json:"text,omitempty"`
+	ImageURL *ImageURL    `json:"image_url,omitempty"`
+	File     *FileContent `json:"file,omitempty"`
+}
+
+// FileContent identifies an uploaded file or carries inline file data.
+type FileContent struct {
+	FileID   string `json:"file_id,omitempty"`
+	FileData string `json:"file_data,omitempty"`
+	Filename string `json:"filename,omitempty"`
 }
 
 // EmbeddingData represents a single embedding.

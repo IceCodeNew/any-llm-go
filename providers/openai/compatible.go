@@ -38,6 +38,7 @@ const (
 // Content part types.
 const (
 	contentTypeImageURL = "image_url"
+	contentTypeFile     = "file"
 	contentTypeText     = "text"
 )
 
@@ -723,6 +724,20 @@ func convertUserMessage(msg providers.Message) openai.ChatCompletionMessageParam
 						URL: part.ImageURL.URL,
 					}))
 				}
+			case contentTypeFile:
+				file := openai.ChatCompletionContentPartFileFileParam{}
+				if part.File != nil {
+					if part.File.FileID != "" {
+						file.FileID = openai.String(part.File.FileID)
+					}
+					if part.File.FileData != "" {
+						file.FileData = openai.String(part.File.FileData)
+					}
+					if part.File.Filename != "" {
+						file.Filename = openai.String(part.File.Filename)
+					}
+				}
+				parts = append(parts, openai.FileContentPart(file))
 			}
 		}
 		return openai.UserMessage(parts)
