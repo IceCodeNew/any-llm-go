@@ -93,6 +93,7 @@ var (
 	_ providers.ErrorConverter     = (*CompatibleProvider)(nil)
 	_ providers.ModelLister        = (*CompatibleProvider)(nil)
 	_ providers.Provider           = (*CompatibleProvider)(nil)
+	_ providers.ResponsesProvider  = (*CompatibleProvider)(nil)
 )
 
 // CompatibleProvider implements the providers.Provider interface for OpenAI-compatible APIs.
