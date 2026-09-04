@@ -130,16 +130,42 @@ type ChatCompletionChunk struct {
 
 // Choice represents a completion choice.
 type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason,omitempty"`
+	Index        int                     `json:"index"`
+	Message      Message                 `json:"message"`
+	FinishReason string                  `json:"finish_reason,omitempty"`
+	Logprobs     *ChatCompletionLogprobs `json:"logprobs,omitempty"`
 }
 
 // ChunkChoice represents a choice in a streaming chunk.
 type ChunkChoice struct {
-	Index        int        `json:"index"`
-	Delta        ChunkDelta `json:"delta"`
-	FinishReason string     `json:"finish_reason,omitempty"`
+	Index        int                     `json:"index"`
+	Delta        ChunkDelta              `json:"delta"`
+	FinishReason string                  `json:"finish_reason,omitempty"`
+	Logprobs     *ChatCompletionLogprobs `json:"logprobs,omitempty"`
+}
+
+// ChatCompletionLogprobs contains token-level log probabilities returned for a
+// completion choice. ReasoningContent is used by providers such as DeepSeek,
+// while Refusal is used by OpenAI-compatible providers that return refusal tokens.
+type ChatCompletionLogprobs struct {
+	Content          []ChatCompletionTokenLogprob `json:"content"`
+	ReasoningContent []ChatCompletionTokenLogprob `json:"reasoning_content,omitempty"`
+	Refusal          []ChatCompletionTokenLogprob `json:"refusal,omitempty"`
+}
+
+// ChatCompletionTokenLogprob describes one generated token and its alternatives.
+type ChatCompletionTokenLogprob struct {
+	Token       string                     `json:"token"`
+	Bytes       []int                      `json:"bytes"`
+	Logprob     float64                    `json:"logprob"`
+	TopLogprobs []ChatCompletionTopLogprob `json:"top_logprobs"`
+}
+
+// ChatCompletionTopLogprob describes an alternative token at one output position.
+type ChatCompletionTopLogprob struct {
+	Token   string  `json:"token"`
+	Bytes   []int   `json:"bytes"`
+	Logprob float64 `json:"logprob"`
 }
 
 // ChunkDelta represents the delta content in a streaming chunk.
@@ -156,6 +182,8 @@ type CompletionParams struct {
 	Messages          []Message       `json:"messages"`
 	Temperature       *float64        `json:"temperature,omitempty"`
 	TopP              *float64        `json:"top_p,omitempty"`
+	Logprobs          *bool           `json:"logprobs,omitempty"`
+	TopLogprobs       *int            `json:"top_logprobs,omitempty"`
 	MaxTokens         *int            `json:"max_tokens,omitempty"`
 	Stop              []string        `json:"stop,omitempty"`
 	Stream            bool            `json:"stream,omitempty"`
