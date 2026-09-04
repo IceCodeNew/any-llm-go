@@ -214,6 +214,19 @@ func TestCompatibleProviderCapabilities(t *testing.T) {
 	require.Equal(t, expectedCaps, caps)
 }
 
+func TestCompatibleProviderRejectsUnsupportedFileManagement(t *testing.T) {
+	t.Parallel()
+
+	provider, err := NewCompatible(CompatibleConfig{Name: "test-provider"})
+	require.NoError(t, err)
+
+	_, err = provider.UploadFile(t.Context(), providers.UploadFileParams{})
+	require.ErrorIs(t, err, errors.ErrUnsupported)
+	var unsupported *errors.UnsupportedOperationError
+	require.ErrorAs(t, err, &unsupported)
+	require.Equal(t, "upload file", unsupported.Operation)
+}
+
 func TestValidateCompletionParams(t *testing.T) {
 	t.Parallel()
 

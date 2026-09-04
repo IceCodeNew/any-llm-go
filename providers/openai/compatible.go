@@ -4,11 +4,14 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/pagination"
+	"github.com/openai/openai-go/v3/packages/respjson"
 	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/mozilla-ai/any-llm-go/config"
@@ -91,6 +94,7 @@ var (
 	_ providers.CapabilityProvider = (*CompatibleProvider)(nil)
 	_ providers.EmbeddingProvider  = (*CompatibleProvider)(nil)
 	_ providers.ErrorConverter     = (*CompatibleProvider)(nil)
+	_ providers.FileProvider       = (*CompatibleProvider)(nil)
 	_ providers.ModelLister        = (*CompatibleProvider)(nil)
 	_ providers.Provider           = (*CompatibleProvider)(nil)
 )
@@ -286,6 +290,172 @@ func (p *CompatibleProvider) ListModels(ctx context.Context) (*providers.ModelsR
 		Object: objectList,
 		Data:   models,
 	}, nil
+}
+
+// UploadFile uploads a file through an OpenAI-compatible Files API.
+func (p *CompatibleProvider) UploadFile(
+	ctx context.Context,
+	params providers.UploadFileParams,
+) (*providers.File, error) {
+	if err := p.requireFiles("upload file"); err != nil {
+		return nil, err
+	}
+
+	req := openai.FileNewParams{
+		File:    params.File,
+		Purpose: openai.FilePurpose(params.Purpose),
+	}
+	if params.ExpiresAfter != nil {
+		// DeepSeek documents bracketed multipart fields, while openai-go v3.42.0
+		// serializes this generated nested struct with dotted field names.
+		// https://api-docs.deepseek.com/guides/files_api/#upload-a-file
+		req.SetExtraFields(map[string]any{
+			"expires_after[anchor]":  "created_at",
+			"expires_after[seconds]": fmt.Sprint(*params.ExpiresAfter),
+		})
+	}
+	resp, err := p.client.Files.New(ctx, req)
+	if err != nil {
+		return nil, p.ConvertError(err)
+	}
+	return convertFile(resp)
+}
+
+// ListFiles lists one page from an OpenAI-compatible Files API.
+func (p *CompatibleProvider) ListFiles(
+	ctx context.Context,
+	opts providers.ListFilesOptions,
+) (*providers.FileList, error) {
+	if err := p.requireFiles("list files"); err != nil {
+		return nil, err
+	}
+
+	req := openai.FileListParams{}
+	if opts.After != "" {
+		req.After = openai.String(opts.After)
+	}
+	if opts.Limit != nil {
+		req.Limit = openai.Int(int64(*opts.Limit))
+	}
+	if opts.Order != "" {
+		req.Order = openai.FileListParamsOrder(opts.Order)
+	}
+	if opts.Purpose != "" {
+		req.Purpose = openai.String(opts.Purpose)
+	}
+	resp, err := p.client.Files.List(ctx, req)
+	if err != nil {
+		return nil, p.ConvertError(err)
+	}
+	return convertFileList(resp)
+}
+
+// RetrieveFile returns metadata for an uploaded file.
+func (p *CompatibleProvider) RetrieveFile(ctx context.Context, fileID string) (*providers.File, error) {
+	if err := p.requireFiles("retrieve file"); err != nil {
+		return nil, err
+	}
+	resp, err := p.client.Files.Get(ctx, fileID)
+	if err != nil {
+		return nil, p.ConvertError(err)
+	}
+	return convertFile(resp)
+}
+
+// DeleteFile deletes an uploaded file.
+func (p *CompatibleProvider) DeleteFile(ctx context.Context, fileID string) (*providers.DeletedFile, error) {
+	if err := p.requireFiles("delete file"); err != nil {
+		return nil, err
+	}
+	resp, err := p.client.Files.Delete(ctx, fileID)
+	if err != nil {
+		return nil, p.ConvertError(err)
+	}
+	return convertDeletedFile(resp)
+}
+
+func (p *CompatibleProvider) requireFiles(operation string) error {
+	if p.compatibleConfig.Capabilities.Files {
+		return nil
+	}
+	return errors.NewUnsupportedOperationError(p.Name(), operation, nil)
+}
+
+func convertFile(source *openai.FileObject) (*providers.File, error) {
+	if err := requireFileFields([]fileField{
+		{"id", source.JSON.ID},
+		{"object", source.JSON.Object},
+		{"bytes", source.JSON.Bytes},
+		{"created_at", source.JSON.CreatedAt},
+		{"filename", source.JSON.Filename},
+		{"purpose", source.JSON.Purpose},
+	}); err != nil {
+		return nil, err
+	}
+	result := &providers.File{
+		ID:        source.ID,
+		Object:    string(source.Object),
+		Bytes:     source.Bytes,
+		CreatedAt: source.CreatedAt,
+		Filename:  source.Filename,
+		Purpose:   string(source.Purpose),
+	}
+	if source.JSON.ExpiresAt.Raw() != "" && !source.JSON.ExpiresAt.Valid() {
+		return nil, fmt.Errorf("decoding file: missing or invalid expires_at")
+	}
+	if source.JSON.ExpiresAt.Valid() {
+		result.ExpiresAt = new(source.ExpiresAt)
+	}
+	return result, nil
+}
+
+func convertFileList(source *pagination.CursorPage[openai.FileObject]) (*providers.FileList, error) {
+	var metadata struct {
+		Object  string `json:"object"`
+		FirstID string `json:"first_id"`
+		LastID  string `json:"last_id"`
+	}
+	if err := json.Unmarshal([]byte(source.RawJSON()), &metadata); err != nil {
+		return nil, fmt.Errorf("decoding file list metadata: %w", err)
+	}
+
+	files := make([]providers.File, 0, len(source.Data))
+	for i := range source.Data {
+		file, err := convertFile(&source.Data[i])
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, *file)
+	}
+	return &providers.FileList{
+		Object: metadata.Object, Data: files, FirstID: metadata.FirstID,
+		LastID: metadata.LastID, HasMore: source.HasMore,
+	}, nil
+}
+
+type fileField struct {
+	name  string
+	value respjson.Field
+}
+
+func requireFileFields(fields []fileField) error {
+	for _, field := range fields {
+		if !field.value.Valid() {
+			return fmt.Errorf("decoding file: missing or invalid %s", field.name)
+		}
+	}
+	return nil
+}
+
+func convertDeletedFile(source *openai.FileDeleted) (*providers.DeletedFile, error) {
+	if err := requireFileFields([]fileField{
+		{"id", source.JSON.ID},
+		{"object", source.JSON.Object},
+		{"deleted", source.JSON.Deleted},
+	}); err != nil {
+		return nil, err
+	}
+	return &providers.DeletedFile{ID: source.ID, Object: string(source.Object), Deleted: source.Deleted}, nil
 }
 
 // Name returns the provider name.
