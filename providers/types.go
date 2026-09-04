@@ -104,6 +104,8 @@ type Capabilities struct {
 	ListModels          bool
 	Moderation          bool
 	Rerank              bool
+	Responses           bool
+	ResponsesStreaming  bool
 }
 
 // ChatCompletion represents a chat completion response in OpenAI format.
