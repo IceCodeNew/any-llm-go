@@ -18,6 +18,10 @@ type deepSeekChatContent struct {
 	ReasoningContent *string         `json:"reasoning_content"`
 }
 
+type deepSeekChoiceLogprobs struct {
+	ReasoningContent []providers.ChatCompletionTokenLogprob `json:"reasoning_content"`
+}
+
 type deepSeekThinking struct {
 	Type string `json:"type"`
 }
@@ -143,6 +147,9 @@ func transformResponse(source *oaisdk.ChatCompletion, result *providers.ChatComp
 		if content.ReasoningContent != nil {
 			result.Choices[i].Message.Reasoning = &providers.Reasoning{Content: *content.ReasoningContent}
 		}
+		if err := preserveReasoningLogprobs(choice.Logprobs.RawJSON(), result.Choices[i].Logprobs); err != nil {
+			return fmt.Errorf("decoding DeepSeek choice %d reasoning_content logprobs: %w", i, err)
+		}
 	}
 
 	return nil
@@ -162,8 +169,24 @@ func transformChunk(source *oaisdk.ChatCompletionChunk, result *providers.ChatCo
 		if content.ReasoningContent != nil {
 			result.Choices[i].Delta.Reasoning = &providers.Reasoning{Content: *content.ReasoningContent}
 		}
+		if err := preserveReasoningLogprobs(choice.Logprobs.RawJSON(), result.Choices[i].Logprobs); err != nil {
+			return fmt.Errorf("decoding DeepSeek choice %d reasoning_content logprobs: %w", i, err)
+		}
 	}
 
+	return nil
+}
+
+func preserveReasoningLogprobs(raw string, result *providers.ChatCompletionLogprobs) error {
+	if raw == "" || raw == "null" {
+		return nil
+	}
+
+	var logprobs deepSeekChoiceLogprobs
+	if err := json.Unmarshal([]byte(raw), &logprobs); err != nil {
+		return err
+	}
+	result.ReasoningContent = logprobs.ReasoningContent
 	return nil
 }
 
