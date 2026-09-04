@@ -4,6 +4,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"io"
 )
 
 // Finish reasons.
@@ -34,6 +35,17 @@ const (
 	RoleUser      = "user"
 )
 
+// File purposes supported by normalized file operations.
+const (
+	FilePurposeUserData = "user_data"
+)
+
+// File list ordering.
+const (
+	FileOrderAsc  = "asc"
+	FileOrderDesc = "desc"
+)
+
 // CapabilityProvider is an optional interface for providers to report capabilities.
 type CapabilityProvider interface {
 	Provider
@@ -44,6 +56,17 @@ type CapabilityProvider interface {
 type EmbeddingProvider interface {
 	Provider
 	Embedding(ctx context.Context, params EmbeddingParams) (*EmbeddingResponse, error)
+}
+
+// FileProvider is an optional interface for providers that manage uploaded files.
+// Check Capabilities.Files before use; compatible providers return ErrUnsupported
+// when their API does not expose file management.
+type FileProvider interface {
+	Provider
+	UploadFile(ctx context.Context, params UploadFileParams) (*File, error)
+	ListFiles(ctx context.Context, opts ListFilesOptions) (*FileList, error)
+	RetrieveFile(ctx context.Context, fileID string) (*File, error)
+	DeleteFile(ctx context.Context, fileID string) (*DeletedFile, error)
 }
 
 // ModerationProvider is an optional interface for providers that support
@@ -101,6 +124,7 @@ type Capabilities struct {
 	CompletionStreaming bool
 	CompletionTools     bool
 	Embedding           bool
+	Files               bool
 	ListModels          bool
 	Moderation          bool
 	Rerank              bool
@@ -205,6 +229,48 @@ type EmbeddingResponse struct {
 type EmbeddingUsage struct {
 	PromptTokens int `json:"prompt_tokens"`
 	TotalTokens  int `json:"total_tokens"`
+}
+
+// UploadFileParams configures an uploaded file and its optional expiration.
+type UploadFileParams struct {
+	File         io.Reader
+	Purpose      string
+	ExpiresAfter *int
+}
+
+// ListFilesOptions controls cursor pagination and filtering for uploaded files.
+type ListFilesOptions struct {
+	After   string
+	Limit   *int
+	Order   string
+	Purpose string
+}
+
+// File describes a remotely stored file.
+type File struct {
+	ID        string `json:"id"`
+	Object    string `json:"object"`
+	Bytes     int64  `json:"bytes"`
+	CreatedAt int64  `json:"created_at"`
+	Filename  string `json:"filename"`
+	Purpose   string `json:"purpose"`
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
+}
+
+// FileList is one page of remotely stored files.
+type FileList struct {
+	Object  string `json:"object"`
+	Data    []File `json:"data"`
+	FirstID string `json:"first_id"`
+	LastID  string `json:"last_id"`
+	HasMore bool   `json:"has_more"`
+}
+
+// DeletedFile confirms deletion of a remotely stored file.
+type DeletedFile struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Deleted bool   `json:"deleted"`
 }
 
 // ModerationParams is the request payload for POST /v1/moderations.
