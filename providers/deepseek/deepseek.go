@@ -40,6 +40,7 @@ const (
 var (
 	_ providers.CapabilityProvider = (*Provider)(nil)
 	_ providers.ErrorConverter     = (*Provider)(nil)
+	_ providers.FileProvider       = (*Provider)(nil)
 	_ providers.ModelLister        = (*Provider)(nil)
 	_ providers.Provider           = (*Provider)(nil)
 )
@@ -99,6 +100,7 @@ func capabilities() providers.Capabilities {
 		CompletionStreaming: true,
 		CompletionTools:     true,
 		Embedding:           false, // DeepSeek doesn't host embedding models.
+		Files:               true,
 		ListModels:          true,
 	}
 }
