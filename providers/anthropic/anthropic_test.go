@@ -18,8 +18,6 @@ import (
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
 
-const adaptiveThinkingJSON = `{"type":"adaptive"}`
-
 func TestNew(t *testing.T) {
 	t.Run("creates provider with API key", func(t *testing.T) {
 		provider, err := New(config.WithAPIKey("test-api-key"))
@@ -358,45 +356,38 @@ func TestApplyThinking(t *testing.T) {
 			expectedThinking: `{"type":"disabled"}`,
 		},
 		{
-			name:             "auto selects adaptive thinking without an effort",
-			effort:           providers.ReasoningEffortAuto,
-			expectedThinking: adaptiveThinkingJSON,
+			name:   "auto preserves the model default",
+			effort: providers.ReasoningEffortAuto,
 		},
 		{
-			name:             "minimal maps to the lowest Anthropic effort",
-			effort:           "minimal",
-			expectedThinking: adaptiveThinkingJSON,
-			expectedEffort:   `{"effort":"low"}`,
+			name:           "minimal maps to the lowest Anthropic effort",
+			effort:         "minimal",
+			expectedEffort: `{"effort":"low"}`,
 		},
 		{
-			name:             "low remains low",
-			effort:           providers.ReasoningEffortLow,
-			expectedThinking: adaptiveThinkingJSON,
-			expectedEffort:   `{"effort":"low"}`,
+			name:           "low remains low",
+			effort:         providers.ReasoningEffortLow,
+			expectedEffort: `{"effort":"low"}`,
 		},
 		{
-			name:             "medium remains medium",
-			effort:           providers.ReasoningEffortMedium,
-			expectedThinking: adaptiveThinkingJSON,
-			expectedEffort:   `{"effort":"medium"}`,
+			name:           "medium remains medium",
+			effort:         providers.ReasoningEffortMedium,
+			expectedEffort: `{"effort":"medium"}`,
 		},
 		{
-			name:             "high remains high",
-			effort:           providers.ReasoningEffortHigh,
-			expectedThinking: adaptiveThinkingJSON,
-			expectedEffort:   `{"effort":"high"}`,
+			name:           "high remains high",
+			effort:         providers.ReasoningEffortHigh,
+			expectedEffort: `{"effort":"high"}`,
 		},
 		{
-			name:             "xhigh remains xhigh",
-			effort:           "xhigh",
-			expectedThinking: adaptiveThinkingJSON,
-			expectedEffort:   `{"effort":"xhigh"}`,
+			name:           "xhigh remains xhigh",
+			effort:         "xhigh",
+			expectedEffort: `{"effort":"xhigh"}`,
 		},
 		{
-			name:             "max remains max",
-			effort:           "max",
-			expectedThinking: adaptiveThinkingJSON,
-			expectedEffort:   `{"effort":"max"}`,
+			name:           "max remains max",
+			effort:         "max",
+			expectedEffort: `{"effort":"max"}`,
 		},
 		{
 			name:      "unknown effort is rejected",
@@ -1387,7 +1378,7 @@ func TestConvertParams_ResponseFormat(t *testing.T) {
 		require.Equal(t, schema, result.OutputConfig.Format.Schema)
 	})
 
-	t.Run("adaptive effort preserves the structured output format", func(t *testing.T) {
+	t.Run("effort preserves the structured output format", func(t *testing.T) {
 		t.Parallel()
 
 		params := baseParams()
@@ -1404,7 +1395,7 @@ func TestConvertParams_ResponseFormat(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, schema, result.OutputConfig.Format.Schema)
 		require.Equal(t, anthropic.OutputConfigEffortHigh, result.OutputConfig.Effort)
-		require.NotNil(t, result.Thinking.OfAdaptive)
+		require.Equal(t, anthropic.ThinkingConfigParamUnion{}, result.Thinking)
 	})
 
 	t.Run("unsupported JSONSchema fields are not forwarded", func(t *testing.T) {

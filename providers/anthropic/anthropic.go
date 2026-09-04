@@ -382,19 +382,15 @@ func (s *streamState) handleTextDelta(text string) *providers.ChatCompletionChun
 	return &chunk
 }
 
-// applyThinking configures the current adaptive-thinking contract.
+// applyThinking translates normalized effort without forcing adaptive thinking.
 func applyThinking(req *anthropic.MessageNewParams, effort providers.ReasoningEffort) error {
 	switch effort {
-	case "":
+	case "", providers.ReasoningEffortAuto:
 		return nil
 	case providers.ReasoningEffortNone:
 		req.Thinking = anthropic.ThinkingConfigParamUnion{
 			OfDisabled: new(anthropic.NewThinkingConfigDisabledParam()),
 		}
-
-		return nil
-	case providers.ReasoningEffortAuto:
-		req.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}}
 
 		return nil
 	case "minimal":
@@ -405,11 +401,9 @@ func applyThinking(req *anthropic.MessageNewParams, effort providers.ReasoningEf
 		return errors.NewUnsupportedParamError(providerName, "reasoning_effort="+string(effort))
 	}
 
-	// Anthropic's current models select adaptive thinking explicitly and control
-	// its depth through output_config.effort. max_tokens remains an independent
-	// cap on thinking plus response output, so this conversion preserves the caller's value.
-	// https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
-	req.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}}
+	// Effort also applies when thinking is disabled. Do not force a thinking
+	// mode or change the caller's max_tokens when setting this independent control.
+	// https://platform.claude.com/docs/en/build-with-claude/effort
 	req.OutputConfig.Effort = anthropic.OutputConfigEffort(effort)
 
 	return nil
