@@ -53,6 +53,18 @@ type CompatibleConfig struct {
 	// Capabilities describes what the provider supports.
 	Capabilities providers.Capabilities
 
+	// ChatCompletionChunkTransform adapts provider-specific streaming fields
+	// after the SDK and shared converter preserve each chunk.
+	ChatCompletionChunkTransform func(*openai.ChatCompletionChunk, *providers.ChatCompletionChunk) error
+
+	// ChatCompletionRequestTransform adapts provider-specific request fields
+	// after shared conversion and before serialization.
+	ChatCompletionRequestTransform func(providers.CompletionParams, *openai.ChatCompletionNewParams) error
+
+	// ChatCompletionResponseTransform adapts provider-specific response fields
+	// after the SDK and shared converter preserve the response envelope.
+	ChatCompletionResponseTransform func(*openai.ChatCompletion, *providers.ChatCompletion) error
+
 	// ClientOptions replaces the default SDK client options when set.
 	ClientOptions []option.RequestOption
 
@@ -64,14 +76,6 @@ type CompatibleConfig struct {
 
 	// Name is the provider name used in error messages.
 	Name string
-
-	// ChatCompletionRequestTransform is an optional function that modifies the chat
-	// completion request after convertParams() builds it and before it is serialized
-	// to the wire. Providers that are not fully OpenAI-compatible use this to adjust
-	// wire-level fields (e.g. swapping max_completion_tokens back to max_tokens).
-	// The pointer refers to a locally-constructed value owned by the caller; the
-	// function must not retain it beyond the call. Nil means no transformation.
-	ChatCompletionRequestTransform func(*openai.ChatCompletionNewParams)
 
 	// OpenAIMessageSchema enables OpenAI-specific message roles and content fields.
 	// Compatible providers leave this false until their own schemas have been
@@ -183,7 +187,9 @@ func (p *CompatibleProvider) Completion(
 
 	req := convertParamsWith(params, converter)
 	if p.compatibleConfig.ChatCompletionRequestTransform != nil {
-		p.compatibleConfig.ChatCompletionRequestTransform(&req)
+		if transformErr := p.compatibleConfig.ChatCompletionRequestTransform(params, &req); transformErr != nil {
+			return nil, transformErr
+		}
 	}
 
 	resp, err := p.client.Chat.Completions.New(ctx, req)
@@ -191,7 +197,14 @@ func (p *CompatibleProvider) Completion(
 		return nil, p.ConvertError(err)
 	}
 
-	return convertResponse(resp), nil
+	result := convertResponse(resp)
+	if p.compatibleConfig.ChatCompletionResponseTransform != nil {
+		if err := p.compatibleConfig.ChatCompletionResponseTransform(resp, result); err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
 }
 
 // CompletionStream performs a streaming chat completion request.
@@ -216,14 +229,25 @@ func (p *CompatibleProvider) CompletionStream(
 
 		req := convertParamsWith(params, converter)
 		if p.compatibleConfig.ChatCompletionRequestTransform != nil {
-			p.compatibleConfig.ChatCompletionRequestTransform(&req)
+			if err := p.compatibleConfig.ChatCompletionRequestTransform(params, &req); err != nil {
+				errs <- err
+				return
+			}
 		}
 		stream := p.client.Chat.Completions.NewStreaming(ctx, req)
+		defer func() { _ = stream.Close() }()
 
 		for stream.Next() {
 			chunk := stream.Current()
+			result := convertChunk(&chunk)
+			if p.compatibleConfig.ChatCompletionChunkTransform != nil {
+				if err := p.compatibleConfig.ChatCompletionChunkTransform(&chunk, &result); err != nil {
+					errs <- err
+					return
+				}
+			}
 			select {
-			case chunks <- convertChunk(&chunk):
+			case chunks <- result:
 			case <-ctx.Done():
 				// Caller cancelled mid-stream; surface ctx.Err() so the
 				// consumer can tell a cancelled stream apart from one
