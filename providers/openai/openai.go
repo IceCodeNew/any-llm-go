@@ -56,6 +56,7 @@ func capabilities() providers.Capabilities {
 		CompletionStreaming: true,
 		CompletionTools:     true,
 		Embedding:           true,
+		Files:               true,
 		ListModels:          true,
 	}
 }
