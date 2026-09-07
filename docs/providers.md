@@ -7,6 +7,7 @@ any-llm-go supports multiple LLM providers through a unified interface. Each pro
 | Provider                | ID          | Completion | Streaming | Tools | Reasoning | Embeddings | List Models |
 |-------------------------|:------------|:----------:|:---------:|:-----:|:---------:|:----------:|:-----------:|
 | [Anthropic](#anthropic) | `anthropic` |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ❌      |
+| [Azure OpenAI](#azure-openai) | `azureopenai` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [DeepSeek](#deepseek)   | `deepseek`  |     ✅      |     ✅     |   ✅   |     ✅     |     ❌      |      ✅      |
 | [Gemini](#gemini)       | `gemini`    |     ✅      |     ✅     |   ✅   |     ✅     |     ✅      |      ✅      |
 | [Groq](#groq)           | `groq`      |     ✅      |     ✅     |   ✅   |     ❌     |     ❌      |      ✅      |
@@ -209,9 +210,16 @@ provider, err := mistral.New(anyllm.WithAPIKey("your-key"))
 - `mistral-large-latest` - Most capable model
 - `mistral-medium-latest` - Balanced performance
 
-**Reasoning Models:**
-- `magistral-small-latest` - Fast reasoning model
-- `magistral-medium-latest` - More capable reasoning model
+**Reasoning:**
+
+See the [official reasoning guide](https://docs.mistral.ai/studio-api/conversations/reasoning) for supported models and effort settings.
+For multi-turn replay, retain the assistant message returned by `Completion`, including `Reasoning.ProviderRaw`.
+The adapter rejects raw replay content whose answer differs from `Message.Content` rather than overwriting that answer.
+Matching answer text does not establish that the raw thinking blocks are complete.
+
+`CompletionStream` exposes text and per-delta reasoning metadata; it does not assemble a replay-ready assistant message.
+Individual `ProviderRaw` fragments are not cumulative snapshots. Use non-streaming completion when a complete replay-ready message is required.
+The adapter also rejects non-text content it cannot retain, instead of returning partial text as a successful response.
 
 **Embedding Models:**
 - `mistral-embed` - Text embeddings
@@ -426,6 +434,25 @@ for _, model := range models.Data {
 }
 ```
 
+### Azure OpenAI
+
+```go
+import (
+    anyllm "github.com/mozilla-ai/any-llm-go"
+    "github.com/mozilla-ai/any-llm-go/providers/azureopenai"
+)
+
+provider, err := azureopenai.New(
+    anyllm.WithAPIKey("your-azure-key"),
+    anyllm.WithBaseURL("https://your-resource.openai.azure.com"),
+)
+```
+
+**Environment Variables:** `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT`
+
+The provider uses Azure's current `/openai/v1/` endpoint. `Model` values are
+Azure deployment names.
+
 ### OpenAI
 
 ```go
@@ -440,10 +467,10 @@ provider, err := openai.New()
 // Or with explicit API key.
 provider, err := openai.New(anyllm.WithAPIKey("sk-..."))
 
-// Or with custom base URL (for Azure, proxies, etc.).
+// Or with a custom OpenAI-compatible base URL.
 provider, err := openai.New(
     anyllm.WithAPIKey("your-key"),
-    anyllm.WithBaseURL("https://your-endpoint.openai.azure.com"),
+    anyllm.WithBaseURL("https://gateway.example.com/v1"),
 )
 ```
 
@@ -502,12 +529,11 @@ resp, err := provider.Completion(ctx, anyllm.CompletionParams{
 
 The following providers are planned for future releases:
 
-| Provider     | Status                                            |
-|--------------|---------------------------------------------------|
-| Cohere       | Planned                                           |
-| Together AI  | Planned                                           |
-| AWS Bedrock  | Planned                                           |
-| Azure OpenAI | Planned (use OpenAI with custom base URL for now) |
+| Provider     | Status   |
+|--------------|----------|
+| Cohere       | Planned  |
+| Together AI  | Planned  |
+| AWS Bedrock  | Planned  |
 
 ## Adding a New Provider
 
