@@ -172,6 +172,7 @@ func preprocessMessagesForJSONSchema(messages []providers.Message, schema map[st
 
 	// Find the last user message.
 	lastUserIdx := -1
+
 	for i := range slices.Backward(messages) {
 		if messages[i].Role == providers.RoleUser {
 			lastUserIdx = i

@@ -28,8 +28,10 @@ func deepSeekCompletionServer(
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding DeepSeek request: %v", err)
 			http.Error(w, "bad request", http.StatusBadRequest)
+
 			return
 		}
+
 		captured <- body
 
 		w.Header().Set("Content-Type", "application/json")
@@ -108,11 +110,13 @@ func TestCompletionMapsCurrentThinkingRequest(t *testing.T) {
 			require.NotContains(t, body, "user")
 			require.NotContains(t, body, "parallel_tool_calls")
 			require.NotContains(t, body, "seed")
+
 			if test.wantThinking == "" {
 				require.NotContains(t, body, "thinking")
 			} else {
 				require.Equal(t, map[string]any{"type": test.wantThinking}, body["thinking"])
 			}
+
 			if test.wantEffort == "" {
 				require.NotContains(t, body, "reasoning_effort")
 			} else {
@@ -176,6 +180,7 @@ func TestCompletionStreamMapsCurrentThinkingRequest(t *testing.T) {
 	})
 	for range chunks {
 	}
+
 	require.NoError(t, <-errs)
 
 	body := capturedBody()
@@ -386,6 +391,7 @@ func TestCompletionRejectsUnsupportedParamsBeforeTransport(t *testing.T) {
 			t.Parallel()
 
 			var requests atomic.Int32
+
 			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				requests.Add(1)
 			}))
@@ -400,12 +406,14 @@ func TestCompletionRejectsUnsupportedParamsBeforeTransport(t *testing.T) {
 			if len(test.params.Messages) == 0 {
 				test.params.Messages = testutil.SimpleMessages()
 			}
+
 			_, err = provider.Completion(t.Context(), test.params)
 			require.ErrorIs(t, err, test.want)
 
 			chunks, errs := provider.CompletionStream(t.Context(), test.params)
 			for range chunks {
 			}
+
 			require.ErrorIs(t, <-errs, test.want)
 			require.Zero(t, requests.Load())
 		})

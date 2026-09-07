@@ -48,9 +48,11 @@ func transformRequest(
 	if params.ParallelToolCalls != nil {
 		return errors.NewUnsupportedParamError(providerName, "parallel_tool_calls")
 	}
+
 	if params.Seed != nil {
 		return errors.NewUnsupportedParamError(providerName, "seed")
 	}
+
 	if err := transformVisionMessages(params.Messages, req.Messages); err != nil {
 		return err
 	}
@@ -74,9 +76,11 @@ func transformRequest(
 	if params.User != "" {
 		extraFields["user_id"] = params.User
 	}
+
 	if thinking != "" {
 		extraFields["thinking"] = deepSeekThinking{Type: thinking}
 	}
+
 	if len(extraFields) > 0 {
 		// openai-go models neither DeepSeek extension; SetExtraFields is the
 		// official SDK's typed request extension boundary.
@@ -86,6 +90,7 @@ func transformRequest(
 	if len(params.Tools) == 0 {
 		return nil
 	}
+
 	for i, message := range params.Messages {
 		if message.Role != providers.RoleAssistant || message.Reasoning == nil {
 			continue
@@ -112,6 +117,7 @@ func transformVisionMessages(
 		if !message.IsMultiModal() {
 			continue
 		}
+
 		if message.Role != providers.RoleUser {
 			return errors.NewInvalidRequestError(
 				providerName,
@@ -125,6 +131,7 @@ func transformVisionMessages(
 			if err != nil {
 				return err
 			}
+
 			wireParts = append(wireParts, wirePart)
 		}
 
@@ -145,6 +152,7 @@ func convertVisionPart(messageIndex, partIndex int, part providers.ContentPart) 
 				messageIndex, partIndex, "text content cannot include image_url or file",
 			)
 		}
+
 		return deepSeekVisionContentPart{Type: part.Type, Text: part.Text}, nil
 	case "image_url":
 		if part.ImageURL == nil || part.ImageURL.URL == "" || part.Text != "" || part.File != nil {
@@ -152,6 +160,7 @@ func convertVisionPart(messageIndex, partIndex int, part providers.ContentPart) 
 				messageIndex, partIndex, "image_url content requires only a non-empty URL",
 			)
 		}
+
 		switch part.ImageURL.Detail {
 		case "", "auto", "low", "high", "original":
 		default:
@@ -159,6 +168,7 @@ func convertVisionPart(messageIndex, partIndex int, part providers.ContentPart) 
 				messageIndex, partIndex, fmt.Sprintf("unsupported image detail %q", part.ImageURL.Detail),
 			)
 		}
+
 		return deepSeekVisionContentPart{Type: part.Type, ImageURL: part.ImageURL}, nil
 	case "file":
 		if part.File == nil || part.Text != "" || part.ImageURL != nil {
@@ -166,18 +176,22 @@ func convertVisionPart(messageIndex, partIndex int, part providers.ContentPart) 
 				messageIndex, partIndex, "file content requires only file data",
 			)
 		}
+
 		hasFileID := part.File.FileID != ""
+
 		hasFileData := part.File.FileData != ""
 		if hasFileID == hasFileData {
 			return deepSeekVisionContentPart{}, invalidVisionPart(
 				messageIndex, partIndex, "file content requires exactly one of file_id or file_data",
 			)
 		}
+
 		if hasFileID && part.File.Filename != "" {
 			return deepSeekVisionContentPart{}, invalidVisionPart(
 				messageIndex, partIndex, "filename is only supported with file_data",
 			)
 		}
+
 		return deepSeekVisionContentPart{
 			Type:     part.Type,
 			FileID:   part.File.FileID,
@@ -244,6 +258,7 @@ func transformResponse(source *oaisdk.ChatCompletion, result *providers.ChatComp
 		if err != nil {
 			return fmt.Errorf("decoding DeepSeek choice %d message: %w", i, err)
 		}
+
 		if len(content.Content) == 0 {
 			return fmt.Errorf("decoding DeepSeek choice %d content: missing required field", i)
 		}
@@ -252,14 +267,17 @@ func transformResponse(source *oaisdk.ChatCompletion, result *providers.ChatComp
 		if err != nil {
 			return fmt.Errorf("decoding DeepSeek choice %d content: %w", i, err)
 		}
+
 		if messageContent == nil {
 			result.Choices[i].Message.Content = nil
 		} else {
 			result.Choices[i].Message.Content = *messageContent
 		}
+
 		if content.ReasoningContent != nil {
 			result.Choices[i].Message.Reasoning = &providers.Reasoning{Content: *content.ReasoningContent}
 		}
+
 		if err := preserveReasoningLogprobs(choice.Logprobs.RawJSON(), result.Choices[i].Logprobs); err != nil {
 			return fmt.Errorf("decoding DeepSeek choice %d reasoning_content logprobs: %w", i, err)
 		}
@@ -269,6 +287,7 @@ func transformResponse(source *oaisdk.ChatCompletion, result *providers.ChatComp
 	if err != nil {
 		return fmt.Errorf("decoding DeepSeek usage: %w", err)
 	}
+
 	result.Usage = usage
 
 	return nil
@@ -282,12 +301,15 @@ func transformChunk(source *oaisdk.ChatCompletionChunk, result *providers.ChatCo
 		if err != nil {
 			return fmt.Errorf("decoding DeepSeek choice %d delta: %w", i, err)
 		}
+
 		if _, err := decodeOptionalString(content.Content); err != nil {
 			return fmt.Errorf("decoding DeepSeek choice %d delta content: %w", i, err)
 		}
+
 		if content.ReasoningContent != nil {
 			result.Choices[i].Delta.Reasoning = &providers.Reasoning{Content: *content.ReasoningContent}
 		}
+
 		if err := preserveReasoningLogprobs(choice.Logprobs.RawJSON(), result.Choices[i].Logprobs); err != nil {
 			return fmt.Errorf("decoding DeepSeek choice %d reasoning_content logprobs: %w", i, err)
 		}
@@ -297,6 +319,7 @@ func transformChunk(source *oaisdk.ChatCompletionChunk, result *providers.ChatCo
 	if err != nil {
 		return fmt.Errorf("decoding DeepSeek usage: %w", err)
 	}
+
 	result.Usage = usage
 
 	return nil
@@ -317,6 +340,7 @@ func transformUsage(
 	if err := json.Unmarshal([]byte(source.RawJSON()), &usage); err != nil {
 		return nil, fmt.Errorf("decoding prompt_cache_hit_tokens: %w", err)
 	}
+
 	if result == nil {
 		result = &providers.Usage{
 			PromptTokens:     int(source.PromptTokens),
@@ -324,6 +348,7 @@ func transformUsage(
 			TotalTokens:      int(source.TotalTokens),
 		}
 	}
+
 	result.CachedTokens = usage.PromptCacheHitTokens
 
 	return result, nil
@@ -338,7 +363,9 @@ func preserveReasoningLogprobs(raw string, result *providers.ChatCompletionLogpr
 	if err := json.Unmarshal([]byte(raw), &logprobs); err != nil {
 		return fmt.Errorf("decoding reasoning_content: %w", err)
 	}
+
 	result.ReasoningContent = logprobs.ReasoningContent
+
 	return nil
 }
 
@@ -347,6 +374,7 @@ func decodeChatContent(raw string) (deepSeekChatContent, error) {
 	if err := json.Unmarshal([]byte(raw), &content); err != nil {
 		return deepSeekChatContent{}, fmt.Errorf("decoding content variant: %w", err)
 	}
+
 	return content, nil
 }
 
@@ -359,5 +387,6 @@ func decodeOptionalString(raw json.RawMessage) (*string, error) {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, fmt.Errorf("decoding optional string variant: %w", err)
 	}
+
 	return value, nil
 }

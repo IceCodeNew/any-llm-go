@@ -190,18 +190,23 @@ func TestCompletionStreamPreservesReasoningAndTerminalUsage(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+
 		_, err := fmt.Fprint(w, ": keep-alive\n\n")
 		if err != nil {
 			t.Errorf("writing DeepSeek keep-alive: %v", err)
+
 			return
 		}
+
 		for _, event := range events {
 			_, err = fmt.Fprintf(w, "data: %s\n\n", event)
 			if err != nil {
 				t.Errorf("writing DeepSeek stream event: %v", err)
+
 				return
 			}
 		}
+
 		_, err = fmt.Fprint(w, "data: [DONE]\n\n")
 		if err != nil {
 			t.Errorf("writing DeepSeek stream terminator: %v", err)
@@ -218,10 +223,12 @@ func TestCompletionStreamPreservesReasoningAndTerminalUsage(t *testing.T) {
 		Model:    "deepseek-v4-pro",
 		Messages: testutil.SimpleMessages(),
 	})
+
 	chunks := make([]providers.ChatCompletionChunk, 0, len(events))
 	for chunk := range chunkChannel {
 		chunks = append(chunks, chunk)
 	}
+
 	require.NoError(t, <-errChannel)
 	require.Len(t, chunks, len(events))
 	require.NotNil(t, chunks[0].Choices[0].Delta.Reasoning)
@@ -241,6 +248,7 @@ func TestCompletionStreamRejectsMalformedCacheUsage(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+
 		_, err := fmt.Fprint(
 			w,
 			`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13,"prompt_cache_hit_tokens":"3","prompt_cache_miss_tokens":5}}
@@ -266,6 +274,7 @@ data: [DONE]
 	})
 	for range chunks {
 	}
+
 	require.ErrorContains(t, <-errs, "decoding DeepSeek usage")
 }
 
@@ -292,6 +301,7 @@ func TestCompletionMapsDocumentedDeepSeekErrors(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(test.status)
+
 				_, err := fmt.Fprint(w, `{"error":{"message":"request failed","type":"invalid_request_error"}}`)
 				if err != nil {
 					t.Errorf("writing DeepSeek error: %v", err)

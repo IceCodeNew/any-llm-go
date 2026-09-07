@@ -33,6 +33,7 @@ func TestCompletionPreservesReasoningLogprobs(t *testing.T) {
 		TopLogprobs: new(1),
 	})
 	require.NoError(t, err)
+
 	body := <-requestBody
 	require.Equal(t, true, body["logprobs"])
 	require.Equal(t, float64(1), body["top_logprobs"])
@@ -49,6 +50,7 @@ func TestCompletionStreamPreservesReasoningLogprobs(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+
 		_, err := fmt.Fprint(
 			w,
 			`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"finish_reason":null,"delta":{"reasoning_content":"think"},"logprobs":{"content":null,"reasoning_content":[{"token":"think","bytes":null,"logprob":-0.2,"top_logprobs":[]}]}}]}`+"\n\ndata: [DONE]\n\n",
@@ -67,6 +69,7 @@ func TestCompletionStreamPreservesReasoningLogprobs(t *testing.T) {
 		Logprobs: new(true),
 	})
 	chunk := <-chunks
+
 	require.NoError(t, <-errs)
 	require.Equal(t, []providers.ChatCompletionTokenLogprob{{
 		Token: "think", Logprob: -0.2, TopLogprobs: []providers.ChatCompletionTopLogprob{},
