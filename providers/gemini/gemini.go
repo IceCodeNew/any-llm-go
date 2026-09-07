@@ -187,6 +187,7 @@ func (p *Provider) CompletionStream(
 		contents, cfg, err := p.convertParams(params)
 		if err != nil {
 			sendStreamError(ctx, errs, err)
+
 			return
 		}
 		state, err := newStreamState(params.Model)
@@ -396,12 +397,14 @@ func applyMaxTokens(cfg *genai.GenerateContentConfig, maxTokens *int) error {
 	if maxTokens == nil {
 		return nil
 	}
+
 	if *maxTokens < math.MinInt32 || *maxTokens > math.MaxInt32 {
 		return errors.NewInvalidRequestError(
 			providerName,
 			fmt.Errorf("max_tokens must be between %d and %d", math.MinInt32, math.MaxInt32),
 		)
 	}
+
 	cfg.MaxOutputTokens = int32(*maxTokens)
 
 	return nil

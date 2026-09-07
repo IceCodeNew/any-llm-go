@@ -32,7 +32,9 @@ func TestSendStreamError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
+
 	errs <- err
+
 	sendStreamError(ctx, errs, stderrors.New("cancelled delivery"))
 	require.ErrorIs(t, <-errs, err)
 }
@@ -573,6 +575,7 @@ func TestApplyThinkingLevels(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			cfg := &genai.GenerateContentConfig{}
 			require.NoError(t, applyThinking(cfg, tc.model, tc.effort))
 			requireThinkingWire(t, cfg, tc.wire)
@@ -622,6 +625,7 @@ func TestApplyThinkingBudgets(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			cfg := &genai.GenerateContentConfig{}
 			require.NoError(t, applyThinking(cfg, tc.model, tc.effort))
 			requireThinkingWire(t, cfg, tc.wire)
@@ -642,6 +646,7 @@ func TestApplyThinkingPreservesDefaults(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			cfg := &genai.GenerateContentConfig{}
 			require.NoError(t, applyThinking(cfg, tc.model, tc.effort))
 			require.Nil(t, cfg.ThinkingConfig)
@@ -664,6 +669,7 @@ func TestApplyThinkingRejectsUnsupported(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			cfg := &genai.GenerateContentConfig{}
 			require.ErrorIs(t, applyThinking(cfg, tc.model, tc.effort), errors.ErrUnsupportedParam)
 			require.Nil(t, cfg.ThinkingConfig)
@@ -715,9 +721,12 @@ func TestCompletionThinkingWireContract(t *testing.T) {
 		payload, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+
 			return
 		}
+
 		body <- payload
+
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}]}`))
 	}))
@@ -1336,6 +1345,7 @@ func TestConvertParams(t *testing.T) {
 			if tokenCount < math.MinInt || tokenCount > math.MaxInt {
 				t.Skip("overflow input cannot be represented by this platform's int")
 			}
+
 			maxTokens := int(tokenCount)
 			_, _, err := provider.convertParams(providers.CompletionParams{
 				Model:     "gemini-2.0-flash",

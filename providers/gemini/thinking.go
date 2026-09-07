@@ -40,10 +40,12 @@ func applyThinking(
 		if !ok {
 			return errors.NewUnsupportedParamError(providerName, "reasoning_effort")
 		}
+
 		cfg.ThinkingConfig = &genai.ThinkingConfig{
 			IncludeThoughts: true,
 			ThinkingLevel:   level,
 		}
+
 		return nil
 	}
 
@@ -51,6 +53,7 @@ func applyThinking(
 		if effort == providers.ReasoningEffortNone {
 			return nil
 		}
+
 		return errors.NewUnsupportedParamError(providerName, "reasoning_effort")
 	}
 
@@ -58,10 +61,12 @@ func applyThinking(
 	if !ok {
 		return errors.NewUnsupportedParamError(providerName, "reasoning_effort")
 	}
+
 	cfg.ThinkingConfig = &genai.ThinkingConfig{
 		IncludeThoughts: effort != providers.ReasoningEffortNone,
 		ThinkingBudget:  &budget,
 	}
+
 	return nil
 }
 
@@ -86,6 +91,7 @@ func thinkingLevel(effort providers.ReasoningEffort) (genai.ThinkingLevel, bool)
 
 func thinkingBudget(model string, effort providers.ReasoningEffort) (int32, bool) {
 	model = geminiModelName(model)
+
 	switch effort {
 	case providers.ReasoningEffortAuto:
 		return 0, false
@@ -121,6 +127,7 @@ func maximalThinkingBudget(model string) int32 {
 	if strings.Contains(model, "pro") {
 		return thinkingBudgetMax
 	}
+
 	return thinkingBudgetHigh
 }
 
@@ -130,6 +137,7 @@ func usesThinkingLevel(model string) bool {
 
 func usesThinkingBudget(model string) bool {
 	model = geminiModelName(model)
+
 	return strings.HasPrefix(model, "gemini-2.5") || strings.HasPrefix(model, "robotics-er-1.6")
 }
 
@@ -137,5 +145,6 @@ func geminiModelName(model string) string {
 	if slash := strings.LastIndexByte(model, '/'); slash >= 0 {
 		model = model[slash+1:]
 	}
+
 	return strings.ToLower(model)
 }
