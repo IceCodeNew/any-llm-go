@@ -886,6 +886,7 @@ func newTestProvider(t *testing.T, handler http.Handler) *Provider {
 	t.Cleanup(server.Close)
 	provider, err := New(config.WithBaseURL(server.URL))
 	require.NoError(t, err)
+
 	return provider
 }
 
@@ -922,9 +923,11 @@ func TestCompletionPreservesCallerTimeout(t *testing.T) {
 
 	releaseHandler := make(chan struct{})
 	defer close(releaseHandler)
+
 	provider := newTestProvider(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		<-releaseHandler
 	}))
+
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
@@ -942,10 +945,12 @@ func TestCompletionStreamRequiresTerminalResponse(t *testing.T) {
 	}))
 
 	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{Model: "test"})
+
 	chunkCount := 0
 	for range chunks {
 		chunkCount++
 	}
+
 	require.Equal(t, 1, chunkCount)
 	require.ErrorIs(t, <-errs, errors.ErrProvider)
 }
@@ -960,10 +965,12 @@ func TestCompletionStreamReturnsMidstreamError(t *testing.T) {
 	}))
 
 	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{Model: "test"})
+
 	count := 0
 	for range chunks {
 		count++
 	}
+
 	require.Equal(t, 1, count)
 	require.ErrorIs(t, <-errs, errors.ErrProvider)
 }
@@ -975,10 +982,12 @@ func TestCompletionStreamCancellationUnblocksAnUnreadConsumer(t *testing.T) {
 	provider := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		_, _ = fmt.Fprintln(w, `{"model":"test","message":{"role":"assistant","content":"partial"},"done":false}`)
+
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			return
 		}
+
 		flusher.Flush()
 		close(wroteChunk)
 		<-request.Context().Done()
@@ -986,6 +995,7 @@ func TestCompletionStreamCancellationUnblocksAnUnreadConsumer(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	chunks, errs := provider.CompletionStream(ctx, providers.CompletionParams{Model: "test"})
+
 	<-wroteChunk
 	cancel()
 
@@ -995,6 +1005,7 @@ func TestCompletionStreamCancellationUnblocksAnUnreadConsumer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stream did not stop after cancellation")
 	}
+
 	_, open := <-chunks
 	require.False(t, open)
 }

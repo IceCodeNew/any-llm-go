@@ -158,7 +158,9 @@ func (p *Provider) Completion(
 	req.Stream = &stream
 
 	var response api.ChatResponse
+
 	done := false
+
 	err = p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 		response = resp
 		done = resp.Done
@@ -167,6 +169,7 @@ func (p *Provider) Completion(
 	if err != nil {
 		return nil, p.ConvertError(err)
 	}
+
 	if !done {
 		return nil, errors.NewProviderError(providerName, stderrors.New("response ended before the terminal event"))
 	}
@@ -189,6 +192,7 @@ func (p *Provider) CompletionStream(
 		req, err := p.convertParams(params)
 		if err != nil {
 			errs <- err
+
 			return
 		}
 		state := newStreamState()
@@ -204,8 +208,10 @@ func (p *Provider) CompletionStream(
 		})
 		if err != nil {
 			errs <- p.ConvertError(err)
+
 			return
 		}
+
 		if !state.done {
 			errs <- errors.NewProviderError(providerName, stderrors.New("stream ended before the terminal event"))
 		}
@@ -293,10 +299,12 @@ func (p *Provider) convertParams(params providers.CompletionParams) (*api.ChatRe
 	if err != nil {
 		return nil, err
 	}
+
 	tools, err := convertTools(params.Tools)
 	if err != nil {
 		return nil, err
 	}
+
 	format, err := convertResponseFormat(params.ResponseFormat)
 	if err != nil {
 		return nil, err
@@ -311,6 +319,7 @@ func (p *Provider) convertParams(params providers.CompletionParams) (*api.ChatRe
 	if err := applyReasoningEffort(req, params.ReasoningEffort); err != nil {
 		return nil, err
 	}
+
 	return req, nil
 }
 
@@ -331,6 +340,7 @@ func convertOptions(params providers.CompletionParams) map[string]any {
 	if params.Seed != nil {
 		options[optionSeed] = *params.Seed
 	}
+
 	return options
 }
 
@@ -350,6 +360,7 @@ func applyReasoningEffort(req *api.ChatRequest, effort providers.ReasoningEffort
 	default:
 		return errors.NewUnsupportedParamError(providerName, "reasoning_effort")
 	}
+
 	return nil
 }
 
@@ -392,6 +403,7 @@ func (s *streamState) chunk() providers.ChatCompletionChunk {
 // handleChunk processes a streaming response and returns a chunk.
 func (s *streamState) handleChunk(resp *api.ChatResponse) providers.ChatCompletionChunk {
 	s.updateMetadata(resp)
+
 	if resp.Done {
 		s.done = true
 	}
@@ -504,6 +516,7 @@ func convertMessage(msg providers.Message) (*api.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	toolCalls, err := convertRequestToolCalls(msg.ToolCalls)
 	if err != nil {
 		return nil, err
@@ -518,6 +531,7 @@ func convertMessage(msg providers.Message) (*api.Message, error) {
 	if msg.Role == providers.RoleTool {
 		converted.ToolName = msg.Name
 	}
+
 	if msg.Reasoning != nil {
 		converted.Thinking = msg.Reasoning.Content
 	}
@@ -531,15 +545,19 @@ func validateMessageMetadata(msg providers.Message) error {
 	default:
 		return errors.NewInvalidRequestError(providerName, fmt.Errorf("unsupported message role %q", msg.Role))
 	}
+
 	if msg.Role != providers.RoleTool && (msg.Name != "" || msg.ToolCallID != "") {
 		return errors.NewUnsupportedParamError(providerName, "messages.name/tool_call_id")
 	}
+
 	if msg.Role != providers.RoleAssistant && len(msg.ToolCalls) > 0 {
 		return errors.NewUnsupportedParamError(providerName, "messages.tool_calls")
 	}
+
 	if msg.Role != providers.RoleAssistant && msg.Reasoning != nil {
 		return errors.NewUnsupportedParamError(providerName, "messages.reasoning")
 	}
+
 	return nil
 }
 
@@ -553,6 +571,7 @@ func convertRequestToolCalls(toolCalls []providers.ToolCall) ([]api.ToolCall, er
 		if toolCall.Type != toolTypeFunction {
 			return nil, errors.NewUnsupportedParamError(providerName, "messages.tool_calls.type")
 		}
+
 		var arguments api.ToolCallFunctionArguments
 		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
 			return nil, errors.NewInvalidRequestError(
@@ -560,6 +579,7 @@ func convertRequestToolCalls(toolCalls []providers.ToolCall) ([]api.ToolCall, er
 				fmt.Errorf("tool arguments must be a JSON object: %w", err),
 			)
 		}
+
 		converted = append(converted, api.ToolCall{
 			Function: api.ToolCallFunction{
 				Name:      toolCall.Function.Name,
@@ -581,6 +601,7 @@ func convertMessages(messages []providers.Message) ([]api.Message, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		for _, toolCall := range msg.ToolCalls {
 			if toolCall.ID != "" {
 				toolNames[toolCall.ID] = toolCall.Function.Name
@@ -597,6 +618,7 @@ func convertMessages(messages []providers.Message) ([]api.Message, error) {
 				)
 			}
 		}
+
 		result = append(result, *converted)
 	}
 
@@ -607,9 +629,11 @@ func convertMessageContent(msg providers.Message) (string, []api.ImageData, erro
 	if content, ok := msg.Content.(string); ok {
 		return content, nil, nil
 	}
+
 	if msg.Content == nil {
 		return "", nil, nil
 	}
+
 	switch msg.Content.(type) {
 	case []providers.ContentPart, []any:
 	default:
@@ -627,14 +651,19 @@ func convertMessageContent(msg providers.Message) (string, []api.ImageData, erro
 		)
 	}
 
-	var content strings.Builder
-	var images []api.ImageData
+	var (
+		content strings.Builder
+		images  []api.ImageData
+	)
+
 	for _, part := range parts {
 		text, image, err := convertContentPart(part)
 		if err != nil {
 			return "", nil, err
 		}
+
 		content.WriteString(text)
+
 		if image != nil {
 			images = append(images, image)
 		}
@@ -652,6 +681,7 @@ func convertContentPart(part providers.ContentPart) (string, api.ImageData, erro
 				stderrors.New("text content cannot include image_url"),
 			)
 		}
+
 		return part.Text, nil, nil
 	case contentTypeImageURL:
 		if part.Text != "" || part.ImageURL == nil {
@@ -660,10 +690,12 @@ func convertContentPart(part providers.ContentPart) (string, api.ImageData, erro
 				stderrors.New("image content requires image_url only"),
 			)
 		}
+
 		decoded, err := decodeImageDataURL(part.ImageURL.URL)
 		if err != nil {
 			return "", nil, err
 		}
+
 		return "", api.ImageData(decoded), nil
 	default:
 		return "", nil, errors.NewUnsupportedParamError(providerName, "messages.content.type")
@@ -675,6 +707,7 @@ func decodeImageDataURL(dataURL string) ([]byte, error) {
 	if !ok || !strings.HasPrefix(metadata, "data:") || !strings.HasSuffix(metadata, ";base64") {
 		return nil, errors.NewUnsupportedParamError(providerName, "messages.content.image_url")
 	}
+
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, errors.NewInvalidRequestError(
@@ -682,6 +715,7 @@ func decodeImageDataURL(dataURL string) ([]byte, error) {
 			fmt.Errorf("image content must contain valid base64: %w", err),
 		)
 	}
+
 	return decoded, nil
 }
 
@@ -759,9 +793,11 @@ func convertResponseFormat(format *providers.ResponseFormat) (json.RawMessage, e
 				stderrors.New("json_schema response format requires a schema"),
 			)
 		}
+
 		if format.JSONSchema.Strict != nil {
 			return nil, errors.NewUnsupportedParamError(providerName, "response_format.json_schema.strict")
 		}
+
 		schemaBytes, err := json.Marshal(format.JSONSchema.Schema)
 		if err != nil {
 			return nil, errors.NewInvalidRequestError(
@@ -769,6 +805,7 @@ func convertResponseFormat(format *providers.ResponseFormat) (json.RawMessage, e
 				fmt.Errorf("response schema must be valid JSON: %w", err),
 			)
 		}
+
 		return schemaBytes, nil
 	}
 
@@ -781,6 +818,7 @@ func convertToolCalls(toolCalls []api.ToolCall) []providers.ToolCall {
 
 	for i, tc := range toolCalls {
 		args := tc.Function.Arguments.String()
+
 		toolCallID := tc.ID
 		if toolCallID == "" {
 			toolCallID = fmt.Sprintf(toolCallIDFormat, i)
@@ -811,10 +849,12 @@ func convertTools(tools []providers.Tool) (api.Tools, error) {
 		if tool.Type != toolTypeFunction {
 			return nil, errors.NewUnsupportedParamError(providerName, "tools.type")
 		}
+
 		parameters, err := convertToolParameters(tool.Function.Parameters)
 		if err != nil {
 			return nil, err
 		}
+
 		result = append(result, api.Tool{
 			Type: toolTypeFunction,
 			Function: api.ToolFunction{
@@ -844,6 +884,7 @@ func convertToolParameters(parameters map[string]any) (api.ToolFunctionParameter
 			fmt.Errorf("tool schema is invalid: %w", unmarshalErr),
 		)
 	}
+
 	normalized, decodeErr := decodeJSONUseNumber(encoded)
 	if decodeErr != nil {
 		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
@@ -861,6 +902,7 @@ func convertToolParameters(parameters map[string]any) (api.ToolFunctionParameter
 			fmt.Errorf("tool schema cannot be encoded: %w", err),
 		)
 	}
+
 	roundTrip, decodeErr := decodeJSONUseNumber(roundTripJSON)
 	if decodeErr != nil {
 		return api.ToolFunctionParameters{}, errors.NewInvalidRequestError(
@@ -868,6 +910,7 @@ func convertToolParameters(parameters map[string]any) (api.ToolFunctionParameter
 			fmt.Errorf("tool schema cannot be compared: %w", decodeErr),
 		)
 	}
+
 	if !reflect.DeepEqual(normalized, roundTrip) {
 		return api.ToolFunctionParameters{}, errors.NewUnsupportedParamError(providerName, "tools.function.parameters")
 	}
@@ -882,6 +925,7 @@ func decodeJSONUseNumber(data []byte) (any, error) {
 	var value any
 
 	err := decoder.Decode(&value)
+
 	return value, err
 }
 
