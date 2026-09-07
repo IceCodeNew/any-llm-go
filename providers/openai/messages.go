@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/openai/openai-go/v3"
@@ -196,7 +197,7 @@ func convertTextContentParts(msg providers.Message) ([]openai.ChatCompletionCont
 		}
 
 		if part.ImageURL != nil {
-			return nil, fmt.Errorf("text content requires only text")
+			return nil, errors.New("text content requires only text")
 		}
 
 		parts = append(parts, openai.ChatCompletionContentPartTextParam{Text: part.Text})
@@ -261,7 +262,7 @@ func convertOpenAIUserMessage(msg providers.Message) (openai.ChatCompletionMessa
 		switch part.Type {
 		case contentTypeText:
 			if part.ImageURL != nil {
-				return openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("text content requires only text")
+				return openai.ChatCompletionMessageParamUnion{}, errors.New("text content requires only text")
 			}
 
 			parts = append(parts, openai.TextContentPart(part.Text))
@@ -292,7 +293,7 @@ func convertOpenAIImageContentPart(
 	part providers.ContentPart,
 ) (openai.ChatCompletionContentPartUnionParam, error) {
 	if part.ImageURL == nil || part.ImageURL.URL == "" || part.Text != "" {
-		return openai.ChatCompletionContentPartUnionParam{}, fmt.Errorf(
+		return openai.ChatCompletionContentPartUnionParam{}, errors.New(
 			"image_url content requires only a non-empty URL",
 		)
 	}

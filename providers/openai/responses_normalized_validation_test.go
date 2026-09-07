@@ -2,13 +2,13 @@ package openai
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mozilla-ai/any-llm-go/config"
 	anyerrors "github.com/mozilla-ai/any-llm-go/errors"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
@@ -137,19 +137,17 @@ func TestResponsesPreservesTerminalStatusDetails(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_, writeErr := io.WriteString(w, tc.fixture)
-				require.NoError(t, writeErr)
-			}))
-			t.Cleanup(server.Close)
+				w.Body.WriteString(tc.fixture)
+			})}
 
 			provider, err := NewCompatible(CompatibleConfig{
 				Capabilities:   providers.Capabilities{Responses: true},
 				DefaultAPIKey:  "test-key",
-				DefaultBaseURL: server.URL + "/v1",
+				DefaultBaseURL: "http://test/v1",
 				Name:           "test-provider",
-			})
+			}, config.WithHTTPClient(client))
 			require.NoError(t, err)
 
 			result, err := provider.Responses(t.Context(), providers.ResponsesParams{})

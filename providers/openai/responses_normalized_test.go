@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mozilla-ai/any-llm-go/config"
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
 
@@ -59,23 +60,21 @@ func TestResponsesPreservesPortableWireAndStructuredOutput(t *testing.T) {
 	t.Parallel()
 
 	var requestBody json.RawMessage
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/v1/responses", r.URL.Path)
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&requestBody))
 		w.Header().Set("Content-Type", "application/json")
 		_, err := io.WriteString(w, normalizedResponseFixture)
 		require.NoError(t, err)
-	}))
-	t.Cleanup(server.Close)
+	})}
 
 	provider, err := NewCompatible(CompatibleConfig{
 		Capabilities:   providers.Capabilities{Responses: true},
 		DefaultAPIKey:  "test-key",
-		DefaultBaseURL: server.URL + "/v1",
+		DefaultBaseURL: "http://test/v1",
 		Name:           "test-provider",
-	})
+	}, config.WithHTTPClient(client))
 	require.NoError(t, err)
 
 	result, err := provider.Responses(t.Context(), providers.ResponsesParams{

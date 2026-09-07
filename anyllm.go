@@ -90,23 +90,27 @@ type (
 
 // Request/Response types.
 type (
-	ChatCompletion      = providers.ChatCompletion
-	ChatCompletionChunk = providers.ChatCompletionChunk
-	Choice              = providers.Choice
-	ChunkChoice         = providers.ChunkChoice
-	ChunkDelta          = providers.ChunkDelta
-	CompletionParams    = providers.CompletionParams
-	EmbeddingParams     = providers.EmbeddingParams
-	EmbeddingResponse   = providers.EmbeddingResponse
-	ModelsResponse      = providers.ModelsResponse
-	ModerationParams    = providers.ModerationParams
-	ModerationResponse  = providers.ModerationResponse
-	ModerationResult    = providers.ModerationResult
+	ChatCompletion             = providers.ChatCompletion
+	ChatCompletionChunk        = providers.ChatCompletionChunk
+	ChatCompletionLogprobs     = providers.ChatCompletionLogprobs
+	ChatCompletionTokenLogprob = providers.ChatCompletionTokenLogprob
+	ChatCompletionTopLogprob   = providers.ChatCompletionTopLogprob
+	Choice                     = providers.Choice
+	ChunkChoice                = providers.ChunkChoice
+	ChunkDelta                 = providers.ChunkDelta
+	CompletionParams           = providers.CompletionParams
+	EmbeddingParams            = providers.EmbeddingParams
+	EmbeddingResponse          = providers.EmbeddingResponse
+	ModelsResponse             = providers.ModelsResponse
+	ModerationParams           = providers.ModerationParams
+	ModerationResponse         = providers.ModerationResponse
+	ModerationResult           = providers.ModerationResult
 )
 
 // Message types.
 type (
 	ContentPart = providers.ContentPart
+	FileContent = providers.FileContent
 	ImageURL    = providers.ImageURL
 	Message     = providers.Message
 	Reasoning   = providers.Reasoning

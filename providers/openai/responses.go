@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 
@@ -130,7 +131,7 @@ func convertResponsesParams(
 	providerName string,
 	params providers.ResponsesParams,
 ) (responses.ResponseNewParams, error) {
-	req := responses.ResponseNewParams{Model: shared.ResponsesModel(params.Model)}
+	req := responses.ResponseNewParams{Model: params.Model}
 	if len(params.Input) > 0 {
 		items := make(responses.ResponseInputParam, 0, len(params.Input))
 		for _, item := range params.Input {
@@ -196,12 +197,12 @@ func convertResponsesParams(
 func normalizeResponse(providerName string, resp *responses.Response) (*providers.ResponsesResult, error) {
 	if !resp.JSON.ID.Valid() || !resp.JSON.Model.Valid() || !resp.JSON.Object.Valid() ||
 		resp.Object != "response" || !resp.JSON.Output.Valid() {
-		return nil, errors.NewProviderError(providerName, fmt.Errorf("malformed Responses API result"))
+		return nil, errors.NewProviderError(providerName, stderrors.New("malformed Responses API result"))
 	}
 
 	result := &providers.ResponsesResult{
 		ID:     resp.ID,
-		Model:  string(resp.Model),
+		Model:  resp.Model,
 		Status: string(resp.Status),
 		// A valid response can contain only tool or reasoning output.
 		OutputText:  resp.OutputText(),
