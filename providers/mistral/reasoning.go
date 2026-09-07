@@ -179,7 +179,8 @@ func decodeContentChunk(raw json.RawMessage) (chunkProjection, error) {
 	}
 
 	// An unknown union arm still has a discriminator; null/missing chunks do not.
-	// https://github.com/mistralai/client-python/blob/df37126528859588193a9e954e820b12861ad106/src/mistralai/client/utils/unions.py
+	// https://github.com/mistralai/client-python/blob/df37126528859588193a9e954e820b12861ad106/
+	// src/mistralai/client/utils/unions.py
 	if discriminator.Type == nil {
 		return chunkProjection{}, errors.New("content chunk is missing type")
 	}

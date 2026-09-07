@@ -34,12 +34,18 @@ func TestReasoningAssemblyIsStructuralAndPerChoice(t *testing.T) {
 
 	chunks, errs := assembleReasoningStream(ctx, cancel, upstreamChunks, upstreamErrs)
 	upstreamChunks <- providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{
-		reasoningDelta(4, `[{"type":"thinking","thinking":[{"type":"text","text":"four-a"},{"type":"reference","reference_ids":["ref-4"]}],"signature":"sig-4a","closed":false}]`, ""),
-		reasoningDelta(1, `[{"type":"thinking","thinking":[{"type":"tool_reference","tool":"lookup","args":{"x":1}}],"signature":"sig-1","closed":false}]`, ""),
+		reasoningDelta(4,
+			`[{"type":"thinking","thinking":[{"type":"text","text":"four-a"},`+
+				`{"type":"reference","reference_ids":["ref-4"]}],"signature":"sig-4a","closed":false}]`, ""),
+		reasoningDelta(1,
+			`[{"type":"thinking","thinking":[{"type":"tool_reference","tool":"lookup","args":{"x":1}}],`+
+				`"signature":"sig-1","closed":false}]`, ""),
 	}}
 
 	upstreamChunks <- providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{
-		reasoningDelta(4, `[{"type":"thinking","thinking":[],"signature":"sig-4b","closed":true},{"type":"text","text":"transition "}]`, "transition "),
+		reasoningDelta(4,
+			`[{"type":"thinking","thinking":[],"signature":"sig-4b","closed":true},`+
+				`{"type":"text","text":"transition "}]`, "transition "),
 		reasoningDelta(1, `[{"type":"thinking","thinking":[],"signature":null,"closed":true}]`, ""),
 	}}
 
@@ -70,17 +76,19 @@ func TestReasoningAssemblyIsStructuralAndPerChoice(t *testing.T) {
 	require.Equal(t, "fingerprint", terminal.SystemFingerprint)
 	require.Equal(t, 4, terminal.Choices[0].Index)
 	require.Equal(t, 1, terminal.Choices[1].Index)
-	require.JSONEq(t, `[
-		{"type":"thinking","thinking":[{"type":"text","text":"four-a"},{"type":"reference","reference_ids":["ref-4"]}],"signature":"sig-4a","closed":false},
-		{"type":"thinking","thinking":[],"signature":"sig-4b","closed":true},
-		{"type":"text","text":"transition "},
-		{"type":"text","text":"answer"}
-	]`, string(terminal.Choices[0].Delta.Reasoning.ProviderRaw))
-	require.JSONEq(t, `[
-		{"type":"thinking","thinking":[{"type":"tool_reference","tool":"lookup","args":{"x":1}}],"signature":"sig-1","closed":false},
-		{"type":"thinking","thinking":[],"signature":null,"closed":true},
-		{"type":"text","text":"other"}
-	]`, string(terminal.Choices[1].Delta.Reasoning.ProviderRaw))
+	require.JSONEq(t, "[\n\t\t"+
+		`{"type":"thinking","thinking":[{"type":"text","text":"four-a"},`+
+		`{"type":"reference","reference_ids":["ref-4"]}],"signature":"sig-4a","closed":false},`+
+		"\n\t\t"+`{"type":"thinking","thinking":[],"signature":"sig-4b","closed":true},`+
+		"\n\t\t"+`{"type":"text","text":"transition "},`+
+		"\n\t\t"+`{"type":"text","text":"answer"}`+"\n\t]",
+		string(terminal.Choices[0].Delta.Reasoning.ProviderRaw))
+	require.JSONEq(t, "[\n\t\t"+
+		`{"type":"thinking","thinking":[{"type":"tool_reference","tool":"lookup","args":{"x":1}}],`+
+		`"signature":"sig-1","closed":false},`+
+		"\n\t\t"+`{"type":"thinking","thinking":[],"signature":null,"closed":true},`+
+		"\n\t\t"+`{"type":"text","text":"other"}`+"\n\t]",
+		string(terminal.Choices[1].Delta.Reasoning.ProviderRaw))
 
 	replayURL, capturedRequest := mistralReplayServer(t)
 	replayProvider, err := New(config.WithAPIKey("test-key"), config.WithBaseURL(replayURL))
