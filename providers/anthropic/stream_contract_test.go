@@ -17,7 +17,9 @@ import (
 )
 
 const anthropicMessageStartSSE = "event: message_start\n" +
-	`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}` + "\n\n"
+	`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant",` +
+	`"content":[],"model":"claude-opus-5","stop_reason":null,"stop_sequence":null,` +
+	`"usage":{"input_tokens":3,"output_tokens":0}}}` + "\n\n"
 
 func TestCompletionStreamRequiresMessageStop(t *testing.T) {
 	t.Parallel()
@@ -37,7 +39,8 @@ func TestCompletionStreamRequiresMessageStop(t *testing.T) {
 				"event: content_block_stop\n" +
 				`data: {"type":"content_block_stop","index":0}` + "\n\n" +
 				"event: message_delta\n" +
-				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}` + "\n\n" +
+				`data: {"type":"message_delta",` +
+				`"delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}` + "\n\n" +
 				"event: message_stop\n" +
 				`data: {"type":"message_stop"}` + "\n\n",
 		},
@@ -158,11 +161,13 @@ func TestCompletionStreamToolArgumentsAreDeltas(t *testing.T) {
 	// second tool with no arguments: metadata must not depend on a JSON delta.
 	// https://platform.claude.com/docs/en/build-with-claude/streaming#input-json-delta
 	events := []string{
-		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_a","name":"lookup","input":{}}}`,
+		`{"type":"content_block_start","index":0,` +
+			`"content_block":{"type":"tool_use","id":"tool_a","name":"lookup","input":{}}}`,
 		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"key\":"}}`,
 		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"value\"}"}}`,
 		`{"type":"content_block_stop","index":0}`,
-		`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_b","name":"clock","input":{}}}`,
+		`{"type":"content_block_start","index":1,` +
+			`"content_block":{"type":"tool_use","id":"tool_b","name":"clock","input":{}}}`,
 		`{"type":"content_block_stop","index":1}`,
 		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}`,
 		`{"type":"message_stop"}`,

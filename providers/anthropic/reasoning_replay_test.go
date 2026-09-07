@@ -182,11 +182,13 @@ func TestCompletionStreamEmitsCompletedReasoningSnapshotAndReplaysIt(t *testing.
 	t.Parallel()
 
 	events := []string{
-		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"","future":true}}`,
+		`{"type":"content_block_start","index":0,` +
+			`"content_block":{"type":"thinking","thinking":"","signature":"","future":true}}`,
 		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"thought"}}`,
 		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}`,
 		`{"type":"content_block_stop","index":0}`,
-		`{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"encrypted","future":true}}`,
+		`{"type":"content_block_start","index":1,` +
+			`"content_block":{"type":"redacted_thinking","data":"encrypted","future":true}}`,
 		`{"type":"content_block_stop","index":1}`,
 		`{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
 		`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"answer"}}`,

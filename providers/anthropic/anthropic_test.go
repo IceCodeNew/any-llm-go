@@ -655,7 +655,8 @@ func TestConvertTool(t *testing.T) {
 	t.Run("preserves complete schema on the wire", func(t *testing.T) {
 		t.Parallel()
 
-		const schema = `{"type":"object","properties":{},"required":[],"additionalProperties":false,"$defs":{"id":{"type":"integer"}},"x-future":9007199254740993}`
+		const schema = `{"type":"object","properties":{},"required":[],"additionalProperties":false,` +
+			`"$defs":{"id":{"type":"integer"}},"x-future":9007199254740993}`
 
 		var parameters map[string]any
 
