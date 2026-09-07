@@ -184,9 +184,15 @@ func TestCompletionStreamPreservesReasoningAndTerminalUsage(t *testing.T) {
 	t.Parallel()
 
 	events := []string{
-		`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"reasoning"},"finish_reason":null}],"usage":null}`,
-		`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}],"usage":null}`,
-		`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13,"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":5}}`,
+		`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro",` +
+			`"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"reasoning"},` +
+			`"finish_reason":null}],"usage":null}`,
+		`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro",` +
+			`"choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}],"usage":null}`,
+		`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro",` +
+			`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],` +
+			`"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13,` +
+			`"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":5}}`,
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -251,7 +257,10 @@ func TestCompletionStreamRejectsMalformedCacheUsage(t *testing.T) {
 
 		_, err := fmt.Fprint(
 			w,
-			`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13,"prompt_cache_hit_tokens":"3","prompt_cache_miss_tokens":5}}
+			`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,`+
+				`"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],`+
+				`"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13,`+
+				`"prompt_cache_hit_tokens":"3","prompt_cache_miss_tokens":5}}`+`
 
 data: [DONE]
 

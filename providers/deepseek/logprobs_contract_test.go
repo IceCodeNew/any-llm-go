@@ -53,7 +53,11 @@ func TestCompletionStreamPreservesReasoningLogprobs(t *testing.T) {
 
 		_, err := fmt.Fprint(
 			w,
-			`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"finish_reason":null,"delta":{"reasoning_content":"think"},"logprobs":{"content":null,"reasoning_content":[{"token":"think","bytes":null,"logprob":-0.2,"top_logprobs":[]}]}}]}`+"\n\ndata: [DONE]\n\n",
+			`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro",`+
+				`"choices":[{"index":0,"finish_reason":null,"delta":{"reasoning_content":"think"},`+
+				`"logprobs":{"content":null,"reasoning_content":`+
+				`[{"token":"think","bytes":null,"logprob":-0.2,"top_logprobs":[]}]}}]}`+
+				"\n\ndata: [DONE]\n\n",
 		)
 		if err != nil {
 			t.Errorf("writing DeepSeek logprobs stream: %v", err)

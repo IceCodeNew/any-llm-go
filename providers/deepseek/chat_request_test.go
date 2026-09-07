@@ -72,10 +72,11 @@ func TestCompletionMapsCurrentThinkingRequest(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			serverURL, requestBody := deepSeekCompletionServer(t, `{
-				"id":"chatcmpl-test","object":"chat.completion","created":1700000000,
-				"model":"deepseek-v4-pro","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]
-			}`)
+			serverURL, requestBody := deepSeekCompletionServer(t, "{\n\t\t\t\t"+
+				`"id":"chatcmpl-test","object":"chat.completion","created":1700000000,`+
+				`"model":"deepseek-v4-pro","choices":`+
+				`[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]`+
+				"\n\t\t\t}")
 			provider, err := New(
 				config.WithAPIKey("test-key"),
 				config.WithBaseURL(serverURL),
@@ -135,10 +136,11 @@ func TestCompletionMapsCurrentThinkingRequest(t *testing.T) {
 func TestCompletionOmitsReasoningReplayWithoutTools(t *testing.T) {
 	t.Parallel()
 
-	serverURL, requestBody := deepSeekCompletionServer(t, `{
-		"id":"chatcmpl-test","object":"chat.completion","created":1700000000,
-		"model":"deepseek-v4-pro","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]
-	}`)
+	serverURL, requestBody := deepSeekCompletionServer(t, "{\n\t\t"+
+		`"id":"chatcmpl-test","object":"chat.completion","created":1700000000,`+
+		`"model":"deepseek-v4-pro","choices":`+
+		`[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]`+
+		"\n\t}")
 	provider, err := New(
 		config.WithAPIKey("test-key"),
 		config.WithBaseURL(serverURL),
