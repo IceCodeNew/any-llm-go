@@ -195,6 +195,7 @@ func (p *Provider) CompletionStream(
 
 			return
 		}
+
 		state := newStreamState()
 
 		err = p.client.Chat(ctx, req, func(resp api.ChatResponse) error {
@@ -328,15 +329,19 @@ func convertOptions(params providers.CompletionParams) map[string]any {
 	if params.Temperature != nil {
 		options[optionTemperature] = *params.Temperature
 	}
+
 	if params.TopP != nil {
 		options[optionTopP] = *params.TopP
 	}
+
 	if len(params.Stop) > 0 {
 		options[optionStop] = params.Stop
 	}
+
 	if params.MaxTokens != nil {
 		options[optionNumPredict] = *params.MaxTokens
 	}
+
 	if params.Seed != nil {
 		options[optionSeed] = *params.Seed
 	}
