@@ -36,33 +36,44 @@ func assembleReasoningStream(
 			select {
 			case <-ctx.Done():
 				errs <- ctx.Err()
+
 				return
 			case chunk, ok := <-chunkInput:
 				if !ok {
 					chunkInput = nil
+
 					continue
 				}
 
 				accumulateReasoning(chunk, states)
+
 				if hasFinish(chunk) {
 					attachReasoningSnapshots(&chunk, states)
+
 					buffering = true
 				}
+
 				if buffering {
 					pending = append(pending, chunk)
+
 					continue
 				}
+
 				if !forwardChunk(ctx, chunks, chunk) {
 					errs <- ctx.Err()
+
 					return
 				}
 			case err, ok := <-errInput:
 				if !ok {
 					errInput = nil
+
 					continue
 				}
+
 				if err != nil {
 					errs <- err
+
 					return
 				}
 			}
@@ -71,6 +82,7 @@ func assembleReasoningStream(
 		for _, chunk := range pending {
 			if !forwardChunk(ctx, chunks, chunk) {
 				errs <- ctx.Err()
+
 				return
 			}
 		}
@@ -89,8 +101,10 @@ func accumulateReasoning(chunk providers.ChatCompletionChunk, states map[int]*st
 					state = &streamedReasoning{}
 					states[choice.Index] = state
 				}
+
 				for _, fragment := range fragments {
 					state.chunks = append(state.chunks, bytes.Clone(fragment))
+
 					var metadata struct {
 						Type   *string `json:"type"`
 						Closed *bool   `json:"closed"`
@@ -121,12 +135,14 @@ func hasFinish(chunk providers.ChatCompletionChunk) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
 func attachReasoningSnapshots(chunk *providers.ChatCompletionChunk, states map[int]*streamedReasoning) {
 	for choiceIndex := range chunk.Choices {
 		choice := &chunk.Choices[choiceIndex]
+
 		state := states[choice.Index]
 		if choice.FinishReason == "" || state == nil || !state.closed {
 			continue
@@ -136,12 +152,14 @@ func attachReasoningSnapshots(chunk *providers.ChatCompletionChunk, states map[i
 		if err != nil {
 			continue
 		}
+
 		_, reasoning, chunked, err := decodeContent(raw)
 		if err == nil && chunked && reasoning != nil {
 			reasoning.Content = ""
 			if choice.Delta.Reasoning != nil {
 				reasoning.Content = choice.Delta.Reasoning.Content
 			}
+
 			choice.Delta.Reasoning = reasoning
 		}
 	}

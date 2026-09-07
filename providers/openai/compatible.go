@@ -231,6 +231,7 @@ func (p *CompatibleProvider) CompletionStream(
 		if p.compatibleConfig.ChatCompletionRequestTransform != nil {
 			if err := p.compatibleConfig.ChatCompletionRequestTransform(params, &req); err != nil {
 				errs <- err
+
 				return
 			}
 		}
@@ -239,10 +240,12 @@ func (p *CompatibleProvider) CompletionStream(
 
 		for stream.Next() {
 			chunk := stream.Current()
+
 			result := convertChunk(&chunk)
 			if p.compatibleConfig.ChatCompletionChunkTransform != nil {
 				if err := p.compatibleConfig.ChatCompletionChunkTransform(&chunk, &result); err != nil {
 					errs <- err
+
 					return
 				}
 			}

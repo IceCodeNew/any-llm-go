@@ -167,6 +167,7 @@ func transformRequest(_ providers.CompletionParams, req *oaisdk.ChatCompletionNe
 		req.MaxTokens = oaisdk.Int(req.MaxCompletionTokens.Value)
 	}
 	req.MaxCompletionTokens = param.Opt[int64]{}
+
 	return nil
 }
 
