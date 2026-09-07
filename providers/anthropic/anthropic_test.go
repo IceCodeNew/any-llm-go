@@ -396,6 +396,7 @@ func TestStreamStateHandleThinkingDelta(t *testing.T) {
 	t.Parallel()
 
 	var state streamState
+
 	state.messageID = "msg_123"
 	state.model = "claude-3"
 
@@ -414,6 +415,7 @@ func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 		t.Parallel()
 
 		var state streamState
+
 		chunk := state.handleInputJSONDelta(`{"key":`)
 		require.Nil(t, chunk)
 	})
@@ -422,6 +424,7 @@ func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 		t.Parallel()
 
 		var state streamState
+
 		state.messageID = "msg_123"
 		state.model = "claude-3"
 		state.currentToolID = "call_1"
