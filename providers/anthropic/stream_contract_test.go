@@ -54,20 +54,24 @@ func TestCompletionStreamRequiresMessageStop(t *testing.T) {
 
 			provider := newStreamTestProvider(t, func(writer http.ResponseWriter, _ *http.Request) {
 				writer.Header().Set("Content-Type", "text/event-stream")
+
 				if _, err := fmt.Fprint(writer, testCase.events); err != nil {
 					t.Errorf("write stream events: %v", err)
 				}
 			})
 
 			chunks, errs := provider.CompletionStream(t.Context(), streamTestParams())
+
 			var received []providers.ChatCompletionChunk
 			for chunk := range chunks {
 				received = append(received, chunk)
 			}
+
 			err := <-errs
 
 			if testCase.wantError {
 				require.ErrorIs(t, err, errors.ErrProvider)
+
 				return
 			}
 
@@ -84,6 +88,7 @@ func TestCompletionStreamReportsSSEError(t *testing.T) {
 
 	provider := newStreamTestProvider(t, func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
+
 		if _, err := fmt.Fprint(
 			writer,
 			"event: error\n"+
@@ -96,6 +101,7 @@ func TestCompletionStreamReportsSSEError(t *testing.T) {
 	chunks, errs := provider.CompletionStream(t.Context(), streamTestParams())
 	for range chunks {
 	}
+
 	require.ErrorIs(t, <-errs, errors.ErrProvider)
 }
 
@@ -105,9 +111,12 @@ func TestSendChunkCancellationUnblocksOutput(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
+
 		chunks := make(chan providers.ChatCompletionChunk)
+
 		done := make(chan bool, 1)
 		go func() { done <- sendChunk(ctx, chunks, providers.ChatCompletionChunk{}) }()
+
 		synctest.Wait()
 		require.Empty(t, done)
 		cancel()
@@ -120,18 +129,23 @@ func TestCompletionStreamCancelledRequest(t *testing.T) {
 
 	provider := newStreamTestProvider(t, func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
+
 		if _, err := fmt.Fprint(writer, anthropicMessageStartSSE); err != nil {
 			t.Errorf("write stream start: %v", err)
 		}
+
 		if err := http.NewResponseController(writer).Flush(); err != nil {
 			t.Errorf("flush stream start: %v", err)
+
 			return
 		}
+
 		<-request.Context().Done()
 	})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	_, errs := provider.CompletionStream(ctx, streamTestParams())
+
 	cancel()
 
 	require.ErrorIs(t, <-errs, context.Canceled)
@@ -155,17 +169,21 @@ func TestCompletionStreamToolArgumentsAreDeltas(t *testing.T) {
 	}
 	provider := newStreamTestProvider(t, func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
+
 		if _, err := fmt.Fprint(writer, anthropicMessageStartSSE); err != nil {
 			t.Errorf("write message start: %v", err)
 		}
+
 		for _, event := range events {
 			var envelope struct {
 				Type string `json:"type"`
 			}
 			if err := json.Unmarshal([]byte(event), &envelope); err != nil {
 				t.Errorf("decode fixture: %v", err)
+
 				return
 			}
+
 			if _, err := fmt.Fprintf(writer, "event: %s\ndata: %s\n\n", envelope.Type, event); err != nil {
 				t.Errorf("write event: %v", err)
 			}
@@ -173,12 +191,15 @@ func TestCompletionStreamToolArgumentsAreDeltas(t *testing.T) {
 	})
 
 	chunks, errs := provider.CompletionStream(t.Context(), streamTestParams())
+
 	var calls []providers.ToolCall
+
 	for chunk := range chunks {
 		for _, choice := range chunk.Choices {
 			calls = append(calls, choice.Delta.ToolCalls...)
 		}
 	}
+
 	require.NoError(t, <-errs)
 	require.Equal(t, []providers.ToolCall{
 		{ID: "tool_a", Type: "function", Function: providers.FunctionCall{Name: "lookup"}},

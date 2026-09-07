@@ -165,6 +165,7 @@ func (p *Provider) Completion(
 	if err != nil {
 		return nil, err
 	}
+
 	return completion, nil
 }
 
@@ -253,8 +254,12 @@ func (p *Provider) CompletionStream(
 
 		stream := p.client.Messages.NewStreaming(ctx, req)
 		defer func() { _ = stream.Close() }()
-		var state streamState
-		var accumulated anthropic.Message
+
+		var (
+			state       streamState
+			accumulated anthropic.Message
+		)
+
 		messageStopped := false
 
 		for stream.Next() {
@@ -264,6 +269,7 @@ func (p *Provider) CompletionStream(
 
 				return
 			}
+
 			var chunk *providers.ChatCompletionChunk
 
 			switch event.Type {
@@ -284,9 +290,11 @@ func (p *Provider) CompletionStream(
 
 			case eventMessageStop:
 				messageStopped = true
+
 				chunk, err = state.handleMessageStop(&accumulated)
 				if err != nil {
 					errs <- err
+
 					return
 				}
 			}
@@ -317,6 +325,7 @@ func (s *streamState) handleMessageStop(message *anthropic.Message) (*providers.
 	if err != nil {
 		return nil, err
 	}
+
 	if reasoning == nil {
 		return nil, nil
 	}
@@ -324,6 +333,7 @@ func (s *streamState) handleMessageStop(message *anthropic.Message) (*providers.
 	chunk := s.chunk(providers.ChunkDelta{Reasoning: &providers.Reasoning{
 		ProviderRaw: reasoning.ProviderRaw,
 	}})
+
 	return &chunk, nil
 }
 
@@ -375,6 +385,7 @@ func (s *streamState) handleContentBlockDelta(event anthropic.ContentBlockDeltaE
 // handleContentBlockStart processes a content_block_start event.
 func (s *streamState) handleContentBlockStart(event anthropic.ContentBlockStartEvent) *providers.ChatCompletionChunk {
 	s.currentToolID = ""
+
 	if event.ContentBlock.Type != blockTypeToolUse {
 		return nil
 	}
@@ -385,6 +396,7 @@ func (s *streamState) handleContentBlockStart(event anthropic.ContentBlockStartE
 		Type:     toolTypeFunction,
 		Function: providers.FunctionCall{Name: event.ContentBlock.Name},
 	}}})
+
 	return &chunk
 }
 
@@ -501,12 +513,15 @@ func convertAssistantMessage(msg providers.Message) (*anthropic.MessageParam, er
 		if err != nil {
 			return nil, err
 		}
+
 		m := anthropic.NewAssistantMessage(content...)
+
 		return &m, nil
 	}
 
 	if len(msg.ToolCalls) == 0 {
 		m := anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.ContentString()))
+
 		return &m, nil
 	}
 
@@ -520,10 +535,12 @@ func convertAssistantMessage(msg providers.Message) (*anthropic.MessageParam, er
 		if err != nil {
 			return nil, err
 		}
+
 		content = append(content, toolCall)
 	}
 
 	m := anthropic.NewAssistantMessage(content...)
+
 	return &m, nil
 }
 
@@ -532,6 +549,7 @@ func replayAssistantContent(msg providers.Message) ([]anthropic.ContentBlockPara
 	if err := json.Unmarshal(msg.Reasoning.ProviderRaw, &rawBlocks); err != nil {
 		return nil, errors.NewInvalidRequestError(providerName, fmt.Errorf("invalid reasoning provider_raw: %w", err))
 	}
+
 	blocks := make([]anthropic.ContentBlockUnion, len(rawBlocks))
 	for i, raw := range rawBlocks {
 		if err := validateReplayBlock(raw); err != nil {
@@ -540,6 +558,7 @@ func replayAssistantContent(msg providers.Message) ([]anthropic.ContentBlockPara
 				fmt.Errorf("invalid reasoning provider_raw block %d: %w", i, err),
 			)
 		}
+
 		if err := json.Unmarshal(raw, &blocks[i]); err != nil {
 			return nil, errors.NewInvalidRequestError(
 				providerName,
@@ -549,11 +568,13 @@ func replayAssistantContent(msg providers.Message) ([]anthropic.ContentBlockPara
 	}
 
 	projectedContent, projectedReasoning, projectedTools, hasReplayBlocks := projectContent(blocks)
+
 	content, ok := msg.Content.(string)
 	if msg.Content == nil {
 		content = ""
 		ok = true
 	}
+
 	if !ok || !hasReplayBlocks || content != projectedContent ||
 		msg.Reasoning.Content != projectedReasoning || !reflect.DeepEqual(msg.ToolCalls, projectedTools) {
 		return nil, errors.NewInvalidRequestError(
@@ -566,6 +587,7 @@ func replayAssistantContent(msg providers.Message) ([]anthropic.ContentBlockPara
 	for i, raw := range rawBlocks {
 		params[i] = param.Override[anthropic.ContentBlockParamUnion](raw)
 	}
+
 	return params, nil
 }
 
@@ -574,10 +596,12 @@ func validateReplayBlock(raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
 	}
+
 	blockType, err := requiredJSONString(fields, "type")
 	if err != nil {
 		return err
 	}
+
 	switch blockType {
 	case blockTypeText:
 		_, err = requiredJSONString(fields, "text")
@@ -591,6 +615,7 @@ func validateReplayBlock(raw json.RawMessage) error {
 		if _, err = requiredJSONString(fields, "id"); err == nil {
 			_, err = requiredJSONString(fields, "name")
 		}
+
 		if err == nil {
 			if input, ok := fields["input"]; !ok || !json.Valid(input) {
 				err = stderrors.New("field input is missing or invalid")
@@ -599,6 +624,7 @@ func validateReplayBlock(raw json.RawMessage) error {
 	default:
 		return fmt.Errorf("unsupported content block type %q", blockType)
 	}
+
 	return err
 }
 
@@ -607,10 +633,12 @@ func requiredJSONString(fields map[string]json.RawMessage, name string) (string,
 	if !ok {
 		return "", fmt.Errorf("field %s is missing", name)
 	}
+
 	var value *string
 	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 		return "", fmt.Errorf("field %s must be a string", name)
 	}
+
 	return *value, nil
 }
 
@@ -621,6 +649,7 @@ func convertImagePart(img *providers.ImageURL) (anthropic.ContentBlockParamUnion
 			providerName, stderrors.New("image content is missing image_url"),
 		)
 	}
+
 	if img.Detail != "" {
 		// Anthropic image blocks have no OpenAI-style detail control.
 		// https://platform.claude.com/docs/en/api/messages/create#body-messages-content-source
@@ -631,6 +660,7 @@ func convertImagePart(img *providers.ImageURL) (anthropic.ContentBlockParamUnion
 	if !ok {
 		return anthropic.NewImageBlock(anthropic.URLImageSourceParam{URL: img.URL}), nil
 	}
+
 	header, data, ok := strings.Cut(dataURL, ",")
 	if !ok || !strings.HasSuffix(header, ";base64") {
 		return anthropic.ContentBlockParamUnion{}, errors.NewInvalidRequestError(
@@ -641,6 +671,7 @@ func convertImagePart(img *providers.ImageURL) (anthropic.ContentBlockParamUnion
 	// Validate only enough to choose the source variant; the service validates
 	// the media type and payload. Never send a malformed data URL as a remote URL.
 	mediaType, _, _ := strings.Cut(header, ";")
+
 	return anthropic.NewImageBlockBase64(mediaType, data), nil
 }
 
@@ -692,7 +723,9 @@ func convertMessages(messages []providers.Message) ([]anthropic.MessageParam, st
 		if err != nil {
 			return nil, "", err
 		}
+
 		seenConversation = true
+
 		result = append(result, *converted)
 	}
 
@@ -702,6 +735,7 @@ func convertMessages(messages []providers.Message) ([]anthropic.MessageParam, st
 // convertResponse converts an Anthropic response to providers format.
 func convertResponse(resp *anthropic.Message) (*providers.ChatCompletion, error) {
 	content, _, toolCalls, _ := projectContent(resp.Content)
+
 	reasoning, err := reasoningFromContent(resp.Content)
 	if err != nil {
 		return nil, errors.NewProviderError(providerName, err)
@@ -738,10 +772,12 @@ func reasoningFromContent(blocks []anthropic.ContentBlockUnion) (*providers.Reas
 	if !hasReplayBlocks {
 		return nil, nil
 	}
+
 	raw, err := marshalContentSnapshot(blocks)
 	if err != nil {
 		return nil, err
 	}
+
 	return &providers.Reasoning{Content: reasoning, ProviderRaw: raw}, nil
 }
 
@@ -752,38 +788,48 @@ func marshalContentSnapshot(blocks []anthropic.ContentBlockUnion) (json.RawMessa
 		if !json.Valid(raw) {
 			return nil, fmt.Errorf("content block %d has no valid raw JSON", i)
 		}
+
 		rawBlocks[i] = append(json.RawMessage(nil), raw...)
 	}
+
 	return json.Marshal(rawBlocks)
 }
 
 func projectContent(blocks []anthropic.ContentBlockUnion) (string, string, []providers.ToolCall, bool) {
-	var content strings.Builder
-	var reasoning strings.Builder
-	var toolCalls []providers.ToolCall
+	var (
+		content   strings.Builder
+		reasoning strings.Builder
+		toolCalls []providers.ToolCall
+	)
+
 	hasReplayBlocks := false
+
 	for _, block := range blocks {
 		switch block.Type {
 		case blockTypeText:
 			content.WriteString(block.Text)
 		case blockTypeThinking:
 			hasReplayBlocks = true
+
 			reasoning.WriteString(block.Thinking)
 		case "redacted_thinking":
 			hasReplayBlocks = true
 		case blockTypeToolUse:
 			inputJSON := ""
+
 			if block.Input != nil {
 				if inputBytes, err := json.Marshal(block.Input); err == nil {
 					inputJSON = string(inputBytes)
 				}
 			}
+
 			toolCalls = append(toolCalls, providers.ToolCall{
 				ID: block.ID, Type: toolTypeFunction,
 				Function: providers.FunctionCall{Name: block.Name, Arguments: inputJSON},
 			})
 		}
 	}
+
 	return content.String(), reasoning.String(), toolCalls, hasReplayBlocks
 }
 
@@ -815,6 +861,7 @@ func convertTool(tool providers.Tool) (anthropic.ToolUnionParam, error) {
 			)
 		}
 	}
+
 	if _, ok := parameters["type"]; !ok {
 		withType := map[string]any{"type": "object"}
 		maps.Copy(withType, parameters)
@@ -918,6 +965,7 @@ func convertToolMessage(msg providers.Message) (*anthropic.MessageParam, error) 
 	m := anthropic.NewUserMessage(
 		anthropic.NewToolResultBlock(msg.ToolCallID, msg.ContentString(), msg.ToolResultIsError),
 	)
+
 	return &m, nil
 }
 
@@ -925,6 +973,7 @@ func convertToolMessage(msg providers.Message) (*anthropic.MessageParam, error) 
 func convertUserMessage(msg providers.Message) (*anthropic.MessageParam, error) {
 	if !msg.IsMultiModal() {
 		m := anthropic.NewUserMessage(anthropic.NewTextBlock(msg.ContentString()))
+
 		return &m, nil
 	}
 
@@ -938,12 +987,14 @@ func convertUserMessage(msg providers.Message) (*anthropic.MessageParam, error) 
 			if err != nil {
 				return nil, err
 			}
+
 			content = append(content, image)
 		default:
 			return nil, errors.NewUnsupportedParamError(providerName, "messages.content.type="+part.Type)
 		}
 	}
 	m := anthropic.NewUserMessage(content...)
+
 	return &m, nil
 }
 

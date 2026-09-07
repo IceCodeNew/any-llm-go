@@ -35,6 +35,7 @@ func TestConvertResponsePreservesOrderedReasoningForToolResultReplay(t *testing.
 	}`)
 	completion, err := convertResponse(&response)
 	require.NoError(t, err)
+
 	message := completion.Choices[0].Message
 
 	require.Equal(t, "answer done", message.Content)
@@ -71,6 +72,7 @@ func TestConvertResponsePreservesSignatureOnlyAndRedactedThinking(t *testing.T) 
 	}`)
 	completion, err := convertResponse(&response)
 	require.NoError(t, err)
+
 	message := completion.Choices[0].Message
 
 	require.Empty(t, message.Reasoning.Content)
@@ -140,6 +142,7 @@ func TestAssistantReasoningReplayRejectsMalformedOrStaleRaw(t *testing.T) {
 			Function: providers.FunctionCall{Name: "lookup", Arguments: `{"key":"value"}`},
 		}},
 	}
+
 	tests := []struct {
 		name   string
 		mutate func(*providers.Message)
@@ -193,25 +196,33 @@ func TestCompletionStreamEmitsCompletedReasoningSnapshotAndReplaysIt(t *testing.
 	}
 	provider := newStreamTestProvider(t, func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
+
 		if err := writeAnthropicSSE(writer, anthropicMessageStartSSE, events); err != nil {
 			t.Errorf("write Anthropic reasoning stream: %v", err)
 		}
 	})
 
 	chunks, errs := provider.CompletionStream(t.Context(), streamTestParams())
-	var reasoningText strings.Builder
-	var raw json.RawMessage
-	var content strings.Builder
+
+	var (
+		reasoningText strings.Builder
+		raw           json.RawMessage
+		content       strings.Builder
+	)
+
 	for chunk := range chunks {
 		delta := chunk.Choices[0].Delta
 		content.WriteString(delta.Content)
+
 		if delta.Reasoning != nil {
 			reasoningText.WriteString(delta.Reasoning.Content)
+
 			if len(delta.Reasoning.ProviderRaw) > 0 {
 				raw = delta.Reasoning.ProviderRaw
 			}
 		}
 	}
+
 	require.NoError(t, <-errs)
 	require.Equal(t, "thought", reasoningText.String())
 	require.Equal(t, "answer", content.String())
@@ -237,8 +248,10 @@ func TestCompletionStreamEmitsCompletedReasoningSnapshotAndReplaysIt(t *testing.
 
 func decodeAnthropicMessage(t *testing.T, raw string) anthropic.Message {
 	t.Helper()
+
 	var message anthropic.Message
 	require.NoError(t, json.Unmarshal([]byte(raw), &message))
+
 	return message
 }
 
@@ -246,6 +259,7 @@ func writeAnthropicSSE(writer http.ResponseWriter, start string, events []string
 	if _, err := fmt.Fprint(writer, start); err != nil {
 		return fmt.Errorf("writing message-start event: %w", err)
 	}
+
 	for _, event := range events {
 		var envelope struct {
 			Type string `json:"type"`
@@ -253,15 +267,18 @@ func writeAnthropicSSE(writer http.ResponseWriter, start string, events []string
 		if err := json.Unmarshal([]byte(event), &envelope); err != nil {
 			return fmt.Errorf("decoding stream event: %w", err)
 		}
+
 		if _, err := fmt.Fprintf(writer, "event: %s\ndata: %s\n\n", envelope.Type, event); err != nil {
 			return fmt.Errorf("writing %s event: %w", envelope.Type, err)
 		}
 	}
+
 	return nil
 }
 
 type failingSSEWriter struct {
 	*httptest.ResponseRecorder
+
 	calls  int
 	failOn int
 }
@@ -271,6 +288,7 @@ func (w *failingSSEWriter) Write(data []byte) (int, error) {
 	if w.calls == w.failOn {
 		return 0, io.ErrClosedPipe
 	}
+
 	return w.ResponseRecorder.Write(data)
 }
 
@@ -293,6 +311,7 @@ func TestWriteAnthropicSSEErrors(t *testing.T) {
 			writer := &failingSSEWriter{ResponseRecorder: httptest.NewRecorder(), failOn: test.failOn}
 			err := writeAnthropicSSE(writer, "start", []string{test.event})
 			require.ErrorContains(t, err, test.message)
+
 			if test.failOn != 0 {
 				require.ErrorIs(t, err, io.ErrClosedPipe)
 			} else {

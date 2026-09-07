@@ -627,18 +627,23 @@ func TestParallelToolsWithoutExplicitChoice(t *testing.T) {
 			if tc.noTools {
 				tools = nil
 			}
+
 			request, err := new(Provider).convertParams(providers.CompletionParams{
 				Tools: tools, ParallelToolCalls: tc.parallel,
 			})
 			require.NoError(t, err)
 			encoded, err := json.Marshal(request)
 			require.NoError(t, err)
+
 			var body map[string]json.RawMessage
 			require.NoError(t, json.Unmarshal(encoded, &body))
+
 			if tc.want == "" {
 				require.NotContains(t, body, "tool_choice")
+
 				return
 			}
+
 			require.JSONEq(t, tc.want, string(body["tool_choice"]))
 		})
 	}
@@ -651,7 +656,9 @@ func TestConvertTool(t *testing.T) {
 		t.Parallel()
 
 		const schema = `{"type":"object","properties":{},"required":[],"additionalProperties":false,"$defs":{"id":{"type":"integer"}},"x-future":9007199254740993}`
+
 		var parameters map[string]any
+
 		decoder := json.NewDecoder(strings.NewReader(schema))
 		decoder.UseNumber()
 		require.NoError(t, decoder.Decode(&parameters))
@@ -662,12 +669,14 @@ func TestConvertTool(t *testing.T) {
 		require.NoError(t, err)
 		encoded, err := json.Marshal(tool)
 		require.NoError(t, err)
+
 		var wire struct {
 			InputSchema json.RawMessage `json:"input_schema"`
 		}
 		require.NoError(t, json.Unmarshal(encoded, &wire))
 		require.JSONEq(t, schema, string(wire.InputSchema))
 		require.Contains(t, string(wire.InputSchema), "9007199254740993")
+
 		unchanged, err := json.Marshal(parameters)
 		require.NoError(t, err)
 		require.JSONEq(t, schema, string(unchanged))
@@ -692,6 +701,7 @@ func TestConvertTool(t *testing.T) {
 		_, err := convertTool(providers.Tool{Function: providers.Function{
 			Name: "invalid", Parameters: map[string]any{"extension": make(chan int)},
 		}})
+
 		var unsupported *json.UnsupportedTypeError
 		require.ErrorAs(t, err, &unsupported)
 		require.Contains(t, err.Error(), "tool invalid: encode input schema")
@@ -1400,11 +1410,13 @@ func TestInvalidRequestClassificationPreservesContextLengthCompatibility(t *test
 
 	for _, message := range []string{"context_length exceeded", "prompt is too long: 201 tokens > 200 maximum"} {
 		body := fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, message)
+
 		var apiErr anthropic.Error
 		require.NoError(t, json.Unmarshal([]byte(body), &apiErr))
 		apiErr.StatusCode = http.StatusBadRequest
 		converted := new(Provider).ConvertError(&apiErr)
 		require.ErrorIs(t, converted, errors.ErrContextLength)
+
 		var original *anthropic.Error
 		require.ErrorAs(t, converted, &original)
 		require.Same(t, &apiErr, original)
@@ -1562,11 +1574,13 @@ func newTestAPIError(t *testing.T, statusCode int, errorType string) *anthropic.
 	t.Helper()
 
 	var apiErr anthropic.Error
+
 	body := fmt.Sprintf(
 		`{"type":"error","error":{"type":%q,"message":"token and safety content"}}`,
 		errorType,
 	)
 	require.NoError(t, json.Unmarshal([]byte(body), &apiErr))
+
 	testURL, err := url.Parse("https://api.anthropic.com/v1/messages")
 	require.NoError(t, err)
 
