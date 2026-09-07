@@ -259,6 +259,7 @@ func (p *CompatibleProvider) CompletionStream(
 					return
 				}
 			}
+
 			select {
 			case chunks <- result:
 			case <-ctx.Done():
@@ -293,6 +294,7 @@ func (p *CompatibleProvider) ConvertError(err error) error {
 		if p.compatibleConfig.APIErrorTransform != nil {
 			return p.compatibleConfig.APIErrorTransform(apiErr, err)
 		}
+
 		return convertAPIError(name, apiErr, err)
 	}
 
@@ -418,14 +420,6 @@ func (p *CompatibleProvider) DeleteFile(ctx context.Context, fileID string) (*pr
 	return convertDeletedFile(resp)
 }
 
-func (p *CompatibleProvider) requireFiles(operation string) error {
-	if p.compatibleConfig.Capabilities.Files {
-		return nil
-	}
-
-	return errors.NewUnsupportedOperationError(p.Name(), operation, nil)
-}
-
 func convertFile(source *openai.FileObject) (*providers.File, error) {
 	if err := requireFileFields([]fileField{
 		{"id", source.JSON.ID},
@@ -513,6 +507,14 @@ func convertDeletedFile(source *openai.FileDeleted) (*providers.DeletedFile, err
 // Name returns the provider name.
 func (p *CompatibleProvider) Name() string {
 	return p.compatibleConfig.Name
+}
+
+func (p *CompatibleProvider) requireFiles(operation string) error {
+	if p.compatibleConfig.Capabilities.Files {
+		return nil
+	}
+
+	return errors.NewUnsupportedOperationError(p.Name(), operation, nil)
 }
 
 // convertAPIError converts an OpenAI API error to a unified error type.
