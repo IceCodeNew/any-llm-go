@@ -308,7 +308,9 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Reasoning  *Reasoning `json:"reasoning,omitempty"`
+	// ToolResultIsError tells providers that a tool message reports a failed execution.
+	ToolResultIsError bool       `json:"is_error,omitzero"`
+	Reasoning         *Reasoning `json:"reasoning,omitempty"`
 }
 
 // Model represents a model from the list models API.
@@ -328,6 +330,9 @@ type ModelsResponse struct {
 // Reasoning represents extended thinking/reasoning content.
 type Reasoning struct {
 	Content string `json:"content,omitempty"`
+	// ProviderRaw retains ordered provider-native content for reasoning replay.
+	// Anthropic streams emit the complete snapshot at message_stop.
+	ProviderRaw json.RawMessage `json:"provider_raw,omitempty"`
 }
 
 // ResponseFormat specifies the format of the response.
