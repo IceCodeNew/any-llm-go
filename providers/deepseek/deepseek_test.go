@@ -3,6 +3,7 @@ package deepseek
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"strings"
 	"testing"
 
@@ -49,6 +50,16 @@ func TestNew(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})
+
+	t.Run("adds provider context to construction errors", func(t *testing.T) {
+		t.Parallel()
+
+		constructionErr := stderrors.New("construction failed")
+		provider, err := New(func(*config.Config) error { return constructionErr })
+		require.Nil(t, provider)
+		require.ErrorIs(t, err, constructionErr)
+		require.ErrorContains(t, err, "creating DeepSeek compatible provider")
+	})
 }
 
 func TestCapabilities(t *testing.T) {
@@ -60,7 +71,7 @@ func TestCapabilities(t *testing.T) {
 	caps := provider.Capabilities()
 
 	require.True(t, caps.Completion)
-	require.False(t, caps.CompletionImage)
+	require.True(t, caps.CompletionImage)
 	require.False(t, caps.CompletionPDF)
 	require.True(t, caps.CompletionReasoning)
 	require.True(t, caps.CompletionStreaming)
@@ -506,7 +517,7 @@ func TestIntegrationCompletionStream(t *testing.T) {
 	err = <-errs
 	require.NoError(t, err)
 
-	require.Greater(t, chunkCount, 0)
+	require.Positive(t, chunkCount)
 	require.NotEmpty(t, content.String())
 }
 
