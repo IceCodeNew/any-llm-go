@@ -156,6 +156,7 @@ func convertFunctionToolCalls(
 		if call.Type != "" && call.Type != toolTypeFunction {
 			return nil, fmt.Errorf("unsupported tool call type: %q", call.Type)
 		}
+
 		toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallUnionParam{
 			OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
 				ID: call.ID,
@@ -197,6 +198,7 @@ func convertTextContentParts(msg providers.Message) ([]openai.ChatCompletionCont
 		if part.ImageURL != nil {
 			return nil, fmt.Errorf("text content requires only text")
 		}
+
 		parts = append(parts, openai.ChatCompletionContentPartTextParam{Text: part.Text})
 	}
 

@@ -56,6 +56,7 @@ func convertEmbeddingParams(params providers.EmbeddingParams) (openai.EmbeddingN
 		for index, token := range input {
 			tokens[index] = int64(token)
 		}
+
 		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokens: tokens}
 	case []int64:
 		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokens: input}
@@ -67,6 +68,7 @@ func convertEmbeddingParams(params providers.EmbeddingParams) (openai.EmbeddingN
 				tokenArrays[arrayIndex][tokenIndex] = int64(token)
 			}
 		}
+
 		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokenArrays: tokenArrays}
 	case [][]int64:
 		req.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfTokenArrays: input}
