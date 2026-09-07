@@ -99,8 +99,9 @@ func TestResponsesPreservesTerminalStatusDetails(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
-			name:       "failed response carries its API error",
-			fixture:    `{"id":"resp_123","object":"response","model":"gpt-5.6-sol","status":"failed","error":{"code":"server_error","message":"generation failed","trace_id":"trace_1"},"output":[]}`,
+			name: "failed response carries its API error",
+			fixture: `{"id":"resp_123","object":"response","model":"gpt-5.6-sol","status":"failed",` +
+				`"error":{"code":"server_error","message":"generation failed","trace_id":"trace_1"},"output":[]}`,
 			wantStatus: "failed",
 			wantError: &providers.ResponsesError{
 				Code:    "server_error",
@@ -108,8 +109,9 @@ func TestResponsesPreservesTerminalStatusDetails(t *testing.T) {
 			},
 		},
 		{
-			name:           "incomplete response carries its reason",
-			fixture:        `{"id":"resp_123","object":"response","model":"gpt-5.6-sol","status":"incomplete","incomplete_details":{"reason":"max_output_tokens","future_detail":true},"output":[]}`,
+			name: "incomplete response carries its reason",
+			fixture: `{"id":"resp_123","object":"response","model":"gpt-5.6-sol","status":"incomplete",` +
+				`"incomplete_details":{"reason":"max_output_tokens","future_detail":true},"output":[]}`,
 			wantStatus:     "incomplete",
 			wantIncomplete: &providers.ResponsesIncompleteDetails{Reason: "max_output_tokens"},
 		},

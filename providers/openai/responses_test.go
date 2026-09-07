@@ -18,7 +18,8 @@ import (
 	"github.com/mozilla-ai/any-llm-go/providers"
 )
 
-const responseFixture = `{"id":"resp_123","object":"response","created_at":1,"model":"gpt-5.6-sol","status":"completed","output":[]}`
+const responseFixture = `{"id":"resp_123","object":"response","created_at":1,` +
+	`"model":"gpt-5.6-sol","status":"completed","output":[]}`
 
 type syncHTTPHandler func(*httptest.ResponseRecorder, *http.Request)
 
