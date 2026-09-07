@@ -434,9 +434,11 @@ func convertParamsWith(
 	if params.TopP != nil {
 		req.TopP = openai.Float(*params.TopP)
 	}
+
 	if params.Logprobs != nil {
 		req.Logprobs = openai.Bool(*params.Logprobs)
 	}
+
 	if params.TopLogprobs != nil {
 		req.TopLogprobs = openai.Int(int64(*params.TopLogprobs))
 	}
@@ -563,6 +565,7 @@ func convertTokenLogprobs(source []openai.ChatCompletionTokenLogprob) []provider
 				Logprob: top.Logprob,
 			})
 		}
+
 		result = append(result, providers.ChatCompletionTokenLogprob{
 			Token:       token.Token,
 			Bytes:       convertTokenBytes(token.Bytes),
@@ -570,6 +573,7 @@ func convertTokenLogprobs(source []openai.ChatCompletionTokenLogprob) []provider
 			TopLogprobs: topLogprobs,
 		})
 	}
+
 	return result
 }
 
@@ -582,6 +586,7 @@ func convertTokenBytes(source []int64) []int {
 	for i, value := range source {
 		result[i] = int(value)
 	}
+
 	return result
 }
 
@@ -715,10 +720,12 @@ func validateCompletionParamsWith(
 	if len(params.Messages) == 0 {
 		return errors.NewInvalidRequestError("", stderrors.New("at least one message is required"))
 	}
+
 	if params.TopLogprobs != nil {
 		if *params.TopLogprobs < 0 || *params.TopLogprobs > 20 {
 			return errors.NewInvalidRequestError("", stderrors.New("top_logprobs must be between 0 and 20"))
 		}
+
 		if params.Logprobs == nil || !*params.Logprobs {
 			return errors.NewInvalidRequestError("", stderrors.New("top_logprobs requires logprobs to be true"))
 		}

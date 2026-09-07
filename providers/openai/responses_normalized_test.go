@@ -60,6 +60,7 @@ func TestResponsesPreservesPortableWireAndStructuredOutput(t *testing.T) {
 	t.Parallel()
 
 	var requestBody json.RawMessage
+
 	client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/v1/responses", r.URL.Path)

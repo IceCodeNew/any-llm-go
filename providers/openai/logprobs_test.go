@@ -41,6 +41,7 @@ func TestConvertParamsPreservesLogprobControls(t *testing.T) {
 			}
 			require.NoError(t, json.Unmarshal(body, &wire))
 			require.Equal(t, tc.logprobs, wire.Logprobs)
+
 			if tc.topLogprobs == nil {
 				require.Nil(t, wire.TopLogprobs)
 			} else {
