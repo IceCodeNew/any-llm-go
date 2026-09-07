@@ -574,6 +574,7 @@ func convertTools(tools []providers.Tool) []openai.ChatCompletionToolUnionParam 
 		if tool.Function.Strict != nil {
 			function.Strict = openai.Bool(*tool.Function.Strict)
 		}
+
 		result = append(result, openai.ChatCompletionToolUnionParam{
 			OfFunction: &openai.ChatCompletionFunctionToolParam{
 				Function: function,

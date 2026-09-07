@@ -26,6 +26,7 @@ func TestCreateResponsePreservesSDKParamsAndCapability(t *testing.T) {
 	require.NoError(t, err)
 	got, err := unsupported.CreateResponse(t.Context(), responses.ResponseNewParams{})
 	require.Nil(t, got)
+
 	var unsupportedErr *anyerrors.UnsupportedOperationError
 	require.ErrorAs(t, err, &unsupportedErr)
 	events, errs := unsupported.StreamResponse(t.Context(), responses.ResponseNewParams{})
@@ -33,6 +34,7 @@ func TestCreateResponsePreservesSDKParamsAndCapability(t *testing.T) {
 	require.ErrorAs(t, <-errs, &unsupportedErr)
 
 	var request map[string]json.RawMessage
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/v1/responses", r.URL.Path)
@@ -71,6 +73,7 @@ func TestStreamResponsePreservesEventsAndTerminalStates(t *testing.T) {
 			t.Parallel()
 
 			var request map[string]json.RawMessage
+
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -91,6 +94,7 @@ func TestStreamResponsePreservesEventsAndTerminalStates(t *testing.T) {
 			require.NoError(t, err)
 
 			events, errs := provider.StreamResponse(t.Context(), responses.ResponseNewParams{})
+
 			var types []string
 			for event := range events {
 				types = append(types, event.Type)
@@ -98,6 +102,7 @@ func TestStreamResponsePreservesEventsAndTerminalStates(t *testing.T) {
 					require.Contains(t, event.RawJSON(), `"future_field":true`)
 				}
 			}
+
 			require.NoError(t, <-errs)
 			require.Equal(t, []string{"future.event", terminal}, types)
 			require.JSONEq(t, `true`, string(request["stream"]))
@@ -129,6 +134,7 @@ func TestStreamResponseReportsTruncationAndCancellation(t *testing.T) {
 		events, errs := provider.StreamResponse(t.Context(), responses.ResponseNewParams{})
 		for range events {
 		}
+
 		require.ErrorIs(t, <-errs, io.ErrUnexpectedEOF)
 	})
 
@@ -138,9 +144,11 @@ func TestStreamResponseReportsTruncationAndCancellation(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
+
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
+
 			<-r.Context().Done()
 		}))
 		t.Cleanup(server.Close)
@@ -155,9 +163,11 @@ func TestStreamResponseReportsTruncationAndCancellation(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
+
 		events, errs := provider.StreamResponse(ctx, responses.ResponseNewParams{})
 		for range events {
 		}
+
 		require.ErrorIs(t, <-errs, context.DeadlineExceeded)
 	})
 }
@@ -194,6 +204,7 @@ func TestResponseTransportMapsAPIErrors(t *testing.T) {
 	events, errs := provider.StreamResponse(t.Context(), responses.ResponseNewParams{})
 	for range events {
 	}
+
 	require.ErrorIs(t, <-errs, anyerrors.ErrRateLimit)
 }
 
@@ -220,6 +231,7 @@ func TestCreateResponseHonorsCallerTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
+
 	result, err := provider.CreateResponse(ctx, responses.ResponseNewParams{})
 	require.Nil(t, result)
 	require.ErrorIs(t, err, context.DeadlineExceeded)

@@ -66,6 +66,7 @@ func (p *CompatibleProvider) StreamResponse(
 
 		if err := p.requireCapability(p.Capabilities().ResponsesStreaming, "responses streaming"); err != nil {
 			reportResponseStreamError(errs, err)
+
 			return
 		}
 
@@ -77,6 +78,7 @@ func (p *CompatibleProvider) StreamResponse(
 		}()
 
 		terminal := false
+
 		for stream.Next() {
 			event := stream.Current()
 			switch event.Type {
@@ -88,18 +90,23 @@ func (p *CompatibleProvider) StreamResponse(
 			case events <- event:
 			case <-ctx.Done():
 				reportResponseStreamError(errs, ctx.Err())
+
 				return
 			}
 		}
 
 		if err := ctx.Err(); err != nil {
 			reportResponseStreamError(errs, err)
+
 			return
 		}
+
 		if err := stream.Err(); err != nil {
 			reportResponseStreamError(errs, p.ConvertError(err))
+
 			return
 		}
+
 		if !terminal {
 			reportResponseStreamError(errs, p.ConvertError(fmt.Errorf(
 				"response stream ended without a terminal event: %w",
@@ -128,6 +135,7 @@ func convertResponsesParams(
 		items := make(responses.ResponseInputParam, 0, len(params.Input))
 		for _, item := range params.Input {
 			var role responses.EasyInputMessageRole
+
 			switch item.Role {
 			case providers.ResponsesInputRoleAssistant:
 				role = responses.EasyInputMessageRoleAssistant
@@ -143,17 +151,21 @@ func convertResponsesParams(
 					fmt.Errorf("unsupported Responses role %q", item.Role),
 				)
 			}
+
 			items = append(items, responses.ResponseInputItemParamOfMessage(item.Content, role))
 		}
+
 		req.Input = responses.ResponseNewParamsInputUnion{OfInputItemList: items}
 	}
 
 	if params.Instructions != nil {
 		req.Instructions = openaisdk.String(*params.Instructions)
 	}
+
 	if params.MaxOutputTokens != nil {
 		req.MaxOutputTokens = openaisdk.Int(int64(*params.MaxOutputTokens))
 	}
+
 	if params.ReasoningEffort != "" && params.ReasoningEffort != providers.ReasoningEffortAuto {
 		// OpenAI documents this complete API-wide set. Individual models can
 		// support a subset and remain responsible for model-specific validation.
@@ -172,6 +184,7 @@ func convertResponsesParams(
 				"reasoning_effort",
 			)
 		}
+
 		req.Reasoning = shared.ReasoningParam{
 			Effort: shared.ReasoningEffort(params.ReasoningEffort),
 		}
@@ -202,12 +215,14 @@ func normalizeResponse(providerName string, resp *responses.Response) (*provider
 			ProviderRaw: json.RawMessage(resp.Error.RawJSON()),
 		}
 	}
+
 	if resp.JSON.IncompleteDetails.Valid() {
 		result.IncompleteDetails = &providers.ResponsesIncompleteDetails{
 			Reason:      resp.IncompleteDetails.Reason,
 			ProviderRaw: json.RawMessage(resp.IncompleteDetails.RawJSON()),
 		}
 	}
+
 	if resp.JSON.Usage.Valid() {
 		result.Usage = &providers.ResponsesUsage{
 			InputTokens:     int(resp.Usage.InputTokens),
@@ -250,6 +265,7 @@ func normalizeResponseOutput(items []responses.ResponseOutputItemUnion) []provid
 				out.Summary = append(out.Summary, summary.Text)
 			}
 		}
+
 		result = append(result, out)
 	}
 

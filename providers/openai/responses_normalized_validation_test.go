@@ -46,6 +46,7 @@ func TestConvertResponsesParamsPreservesOptionalFieldsAndReasoning(t *testing.T)
 				ReasoningEffort: effort,
 			})
 			require.NoError(t, convertErr)
+
 			encoded, marshalErr := json.Marshal(params)
 			require.NoError(t, marshalErr)
 			require.JSONEq(t, `{"reasoning":{"effort":"`+string(effort)+`"}}`, string(encoded))
@@ -155,6 +156,7 @@ func TestResponsesPreservesTerminalStatusDetails(t *testing.T) {
 			if tc.wantProviderError {
 				require.Nil(t, result)
 				require.ErrorIs(t, err, anyerrors.ErrProvider)
+
 				return
 			}
 
@@ -163,6 +165,7 @@ func TestResponsesPreservesTerminalStatusDetails(t *testing.T) {
 			require.Empty(t, result.OutputText)
 			require.Empty(t, result.OutputItems)
 			require.Nil(t, result.Usage)
+
 			if tc.wantError == nil {
 				require.Nil(t, result.Error)
 			} else {
@@ -171,6 +174,7 @@ func TestResponsesPreservesTerminalStatusDetails(t *testing.T) {
 				require.Equal(t, tc.wantError.Message, result.Error.Message)
 				require.Contains(t, string(result.Error.ProviderRaw), `"trace_id":"trace_1"`)
 			}
+
 			if tc.wantIncomplete == nil {
 				require.Nil(t, result.IncompleteDetails)
 			} else {
