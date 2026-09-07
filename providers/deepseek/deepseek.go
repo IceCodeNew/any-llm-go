@@ -104,6 +104,7 @@ func (p *Provider) Responses(
 	if params.Model == "" {
 		return nil, errors.NewInvalidRequestError(providerName, stderrors.New("model is required"))
 	}
+
 	if len(params.Input) == 0 && params.Instructions == nil {
 		return nil, errors.NewInvalidRequestError(
 			providerName,

@@ -51,6 +51,7 @@ func TestResponsesUsesDeepSeekWireAndNormalizesUsage(t *testing.T) {
 	t.Parallel()
 
 	var request json.RawMessage
+
 	client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/responses", r.URL.Path)
@@ -104,6 +105,7 @@ func TestResponsesRejectsMissingDeepSeekRequirements(t *testing.T) {
 	t.Parallel()
 
 	var requests atomic.Int32
+
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		requests.Add(1)
 	}))
@@ -160,12 +162,17 @@ func TestStreamResponseUsesDeepSeekSemanticEvents(t *testing.T) {
 		`"status":"in_progress"`,
 		1,
 	)
-	var request map[string]json.RawMessage
-	var decodeErr error
-	var requestPath string
+
+	var (
+		request     map[string]json.RawMessage
+		decodeErr   error
+		requestPath string
+	)
+
 	client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, r *http.Request) {
 		requestPath = r.URL.Path
 		decodeErr = json.NewDecoder(r.Body).Decode(&request)
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Body.WriteString(
 			"data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":" +
@@ -186,10 +193,12 @@ func TestStreamResponseUsesDeepSeekSemanticEvents(t *testing.T) {
 		Input: responses.ResponseNewParamsInputUnion{OfString: openaisdk.String("hello")},
 		Model: shared.ResponsesModel("deepseek-v4-flash"),
 	})
+
 	var eventTypes []string
 	for event := range events {
 		eventTypes = append(eventTypes, event.Type)
 	}
+
 	require.NoError(t, <-errs)
 	require.NoError(t, decodeErr)
 	require.Equal(t, "/responses", requestPath)

@@ -29,8 +29,10 @@ func (handler syncHTTPHandler) RoundTrip(request *http.Request) (response *http.
 			}
 		}()
 	}
+
 	recorder := httptest.NewRecorder()
 	handler(recorder, request)
+
 	return recorder.Result(), nil
 }
 
@@ -44,6 +46,7 @@ func TestFileLifecycleUsesDeepSeekContract(t *testing.T) {
 	client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, r *http.Request) {
 		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
+
 		switch r.Method + " " + r.URL.Path {
 		case "POST /files":
 			r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
@@ -52,12 +55,16 @@ func TestFileLifecycleUsesDeepSeekContract(t *testing.T) {
 			require.Equal(t, "created_at", r.FormValue("expires_after[anchor]"))
 			require.Equal(t, "3600", r.FormValue("expires_after[seconds]"))
 			file, header, err := r.FormFile("file")
+
 			require.NoError(t, err)
 			defer func() { require.NoError(t, file.Close()) }()
+
 			require.Equal(t, "chart.png", header.Filename)
+
 			content, err := io.ReadAll(file)
 			require.NoError(t, err)
 			require.Equal(t, []byte("image bytes"), content)
+
 			_, err = fmt.Fprint(w, `{
 				"id":"file-api-one","object":"file","bytes":11,"created_at":1700000000,
 				"filename":"chart.png","purpose":"user_data","expires_at":1700003600,
@@ -69,6 +76,7 @@ func TestFileLifecycleUsesDeepSeekContract(t *testing.T) {
 			require.Equal(t, "2", r.URL.Query().Get("limit"))
 			require.Equal(t, "desc", r.URL.Query().Get("order"))
 			require.Equal(t, "user_data", r.URL.Query().Get("purpose"))
+
 			_, err := fmt.Fprint(w, `{
 				"object":"list","data":[{"id":"file-api-one","object":"file","bytes":11,
 				"created_at":1700000000,"filename":"chart.png","purpose":"user_data"}],

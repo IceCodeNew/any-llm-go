@@ -18,13 +18,16 @@ func (p *Provider) UploadFile(ctx context.Context, params providers.UploadFilePa
 	if params.File == nil {
 		return nil, invalidFileRequest("file is required")
 	}
+
 	if params.Purpose != providers.FilePurposeUserData {
 		return nil, invalidFileRequest("purpose must be user_data")
 	}
+
 	if params.ExpiresAfter != nil &&
 		(*params.ExpiresAfter < minFileExpiration || *params.ExpiresAfter > maxFileExpiration) {
 		return nil, invalidFileRequest("expires_after must be between 3600 and 2592000 seconds")
 	}
+
 	return p.CompatibleProvider.UploadFile(ctx, params)
 }
 
@@ -33,12 +36,15 @@ func (p *Provider) ListFiles(ctx context.Context, opts providers.ListFilesOption
 	if opts.Limit != nil && (*opts.Limit < 1 || *opts.Limit > 1000) {
 		return nil, invalidFileRequest("limit must be between 1 and 1000")
 	}
+
 	if opts.Order != "" && opts.Order != providers.FileOrderAsc && opts.Order != providers.FileOrderDesc {
 		return nil, invalidFileRequest("order must be asc or desc")
 	}
+
 	if opts.Purpose != "" && opts.Purpose != providers.FilePurposeUserData {
 		return nil, invalidFileRequest("purpose must be user_data")
 	}
+
 	return p.CompatibleProvider.ListFiles(ctx, opts)
 }
 
@@ -47,6 +53,7 @@ func (p *Provider) RetrieveFile(ctx context.Context, fileID string) (*providers.
 	if fileID == "" {
 		return nil, invalidFileRequest("file_id is required")
 	}
+
 	return p.CompatibleProvider.RetrieveFile(ctx, fileID)
 }
 
@@ -55,6 +62,7 @@ func (p *Provider) DeleteFile(ctx context.Context, fileID string) (*providers.De
 	if fileID == "" {
 		return nil, invalidFileRequest("file_id is required")
 	}
+
 	return p.CompatibleProvider.DeleteFile(ctx, fileID)
 }
 

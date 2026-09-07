@@ -347,10 +347,12 @@ func (p *CompatibleProvider) UploadFile(
 			"expires_after[seconds]": strconv.Itoa(*params.ExpiresAfter),
 		})
 	}
+
 	resp, err := p.client.Files.New(ctx, req)
 	if err != nil {
 		return nil, p.ConvertError(err)
 	}
+
 	return convertFile(resp)
 }
 
@@ -367,19 +369,24 @@ func (p *CompatibleProvider) ListFiles(
 	if opts.After != "" {
 		req.After = openai.String(opts.After)
 	}
+
 	if opts.Limit != nil {
 		req.Limit = openai.Int(int64(*opts.Limit))
 	}
+
 	if opts.Order != "" {
 		req.Order = openai.FileListParamsOrder(opts.Order)
 	}
+
 	if opts.Purpose != "" {
 		req.Purpose = openai.String(opts.Purpose)
 	}
+
 	resp, err := p.client.Files.List(ctx, req)
 	if err != nil {
 		return nil, p.ConvertError(err)
 	}
+
 	return convertFileList(resp)
 }
 
@@ -388,10 +395,12 @@ func (p *CompatibleProvider) RetrieveFile(ctx context.Context, fileID string) (*
 	if err := p.requireFiles("retrieve file"); err != nil {
 		return nil, err
 	}
+
 	resp, err := p.client.Files.Get(ctx, fileID)
 	if err != nil {
 		return nil, p.ConvertError(err)
 	}
+
 	return convertFile(resp)
 }
 
@@ -400,10 +409,12 @@ func (p *CompatibleProvider) DeleteFile(ctx context.Context, fileID string) (*pr
 	if err := p.requireFiles("delete file"); err != nil {
 		return nil, err
 	}
+
 	resp, err := p.client.Files.Delete(ctx, fileID)
 	if err != nil {
 		return nil, p.ConvertError(err)
 	}
+
 	return convertDeletedFile(resp)
 }
 
@@ -411,6 +422,7 @@ func (p *CompatibleProvider) requireFiles(operation string) error {
 	if p.compatibleConfig.Capabilities.Files {
 		return nil
 	}
+
 	return errors.NewUnsupportedOperationError(p.Name(), operation, nil)
 }
 
@@ -425,6 +437,7 @@ func convertFile(source *openai.FileObject) (*providers.File, error) {
 	}); err != nil {
 		return nil, err
 	}
+
 	result := &providers.File{
 		ID:        source.ID,
 		Object:    string(source.Object),
@@ -436,9 +449,11 @@ func convertFile(source *openai.FileObject) (*providers.File, error) {
 	if source.JSON.ExpiresAt.Raw() != "" && !source.JSON.ExpiresAt.Valid() {
 		return nil, stderrors.New("decoding file: missing or invalid expires_at")
 	}
+
 	if source.JSON.ExpiresAt.Valid() {
 		result.ExpiresAt = new(source.ExpiresAt)
 	}
+
 	return result, nil
 }
 
@@ -458,8 +473,10 @@ func convertFileList(source *pagination.CursorPage[openai.FileObject]) (*provide
 		if err != nil {
 			return nil, err
 		}
+
 		files = append(files, *file)
 	}
+
 	return &providers.FileList{
 		Object: metadata.Object, Data: files, FirstID: metadata.FirstID,
 		LastID: metadata.LastID, HasMore: source.HasMore,
@@ -477,6 +494,7 @@ func requireFileFields(fields []fileField) error {
 			return fmt.Errorf("decoding file: missing or invalid %s", field.name)
 		}
 	}
+
 	return nil
 }
 
@@ -488,6 +506,7 @@ func convertDeletedFile(source *openai.FileDeleted) (*providers.DeletedFile, err
 	}); err != nil {
 		return nil, err
 	}
+
 	return &providers.DeletedFile{ID: source.ID, Object: string(source.Object), Deleted: source.Deleted}, nil
 }
 

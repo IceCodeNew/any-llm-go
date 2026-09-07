@@ -125,6 +125,7 @@ func TestCompletionRejectsInvalidDeepSeekVisionFiles(t *testing.T) {
 				}},
 			})
 			require.ErrorIs(t, err, llmerrors.ErrInvalidRequest)
+
 			select {
 			case <-requests:
 				t.Fatal("invalid file input reached transport")
