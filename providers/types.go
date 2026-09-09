@@ -360,6 +360,10 @@ type ModelsResponse struct {
 // Reasoning represents extended thinking/reasoning content.
 type Reasoning struct {
 	Content string `json:"content,omitempty"`
+	// ProviderRaw retains provider-native blocks that Content cannot represent.
+	// Streaming fragments are not necessarily replayable; replay requires a
+	// complete snapshot under the provider's reasoning contract.
+	ProviderRaw json.RawMessage `json:"provider_raw,omitempty"`
 }
 
 // ResponseFormat specifies the format of the response.
