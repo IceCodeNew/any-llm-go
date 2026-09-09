@@ -57,5 +57,7 @@ func capabilities() providers.Capabilities {
 		CompletionTools:     true,
 		Embedding:           true,
 		ListModels:          true,
+		Responses:           true,
+		ResponsesStreaming:  true,
 	}
 }
