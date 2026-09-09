@@ -5,10 +5,12 @@ package deepseek
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"slices"
 
 	"github.com/mozilla-ai/any-llm-go/config"
+	"github.com/mozilla-ai/any-llm-go/errors"
 	"github.com/mozilla-ai/any-llm-go/providers"
 	"github.com/mozilla-ai/any-llm-go/providers/openai"
 )
@@ -37,8 +39,10 @@ const (
 var (
 	_ providers.CapabilityProvider = (*Provider)(nil)
 	_ providers.ErrorConverter     = (*Provider)(nil)
+	_ providers.FileProvider       = (*Provider)(nil)
 	_ providers.ModelLister        = (*Provider)(nil)
 	_ providers.Provider           = (*Provider)(nil)
+	_ providers.ResponsesProvider  = (*Provider)(nil)
 )
 
 // Provider implements the providers.Provider interface for DeepSeek.
@@ -89,6 +93,28 @@ func (p *Provider) CompletionStream(
 	return p.CompatibleProvider.CompletionStream(ctx, params)
 }
 
+// Responses validates the two requirements that differ from OpenAI's
+// portable contract before using the shared Responses transport.
+func (p *Provider) Responses(
+	ctx context.Context,
+	params providers.ResponsesParams,
+) (*providers.ResponsesResult, error) {
+	// DeepSeek requires a model and at least one of input or instructions.
+	// https://api-docs.deepseek.com/guides/responses_api
+	if params.Model == "" {
+		return nil, errors.NewInvalidRequestError(providerName, stderrors.New("model is required"))
+	}
+
+	if len(params.Input) == 0 && params.Instructions == nil {
+		return nil, errors.NewInvalidRequestError(
+			providerName,
+			stderrors.New("at least one of input or instructions is required"),
+		)
+	}
+
+	return p.CompatibleProvider.Responses(ctx, params)
+}
+
 // capabilities returns the capabilities for the DeepSeek provider.
 func capabilities() providers.Capabilities {
 	return providers.Capabilities{
@@ -101,7 +127,10 @@ func capabilities() providers.Capabilities {
 		CompletionStreaming: true,
 		CompletionTools:     true,
 		Embedding:           false, // DeepSeek doesn't host embedding models.
+		Files:               true,
 		ListModels:          true,
+		Responses:           true,
+		ResponsesStreaming:  true,
 	}
 }
 

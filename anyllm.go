@@ -40,6 +40,13 @@ const (
 	FinishReasonToolCalls     = providers.FinishReasonToolCalls
 )
 
+// File purposes and list ordering.
+const (
+	FilePurposeUserData = providers.FilePurposeUserData
+	FileOrderAsc        = providers.FileOrderAsc
+	FileOrderDesc       = providers.FileOrderDesc
+)
+
 // Batch status constants.
 const (
 	BatchStatusCancelled  = providers.BatchStatusCancelled
@@ -70,6 +77,7 @@ type (
 	Capabilities       = providers.Capabilities
 	CapabilityProvider = providers.CapabilityProvider
 	EmbeddingProvider  = providers.EmbeddingProvider
+	FileProvider       = providers.FileProvider
 	ModelLister        = providers.ModelLister
 	ModerationProvider = providers.ModerationProvider
 	Provider           = providers.Provider
@@ -101,10 +109,15 @@ type (
 	CompletionParams           = providers.CompletionParams
 	EmbeddingParams            = providers.EmbeddingParams
 	EmbeddingResponse          = providers.EmbeddingResponse
+	File                       = providers.File
+	FileList                   = providers.FileList
+	DeletedFile                = providers.DeletedFile
+	ListFilesOptions           = providers.ListFilesOptions
 	ModelsResponse             = providers.ModelsResponse
 	ModerationParams           = providers.ModerationParams
 	ModerationResponse         = providers.ModerationResponse
 	ModerationResult           = providers.ModerationResult
+	UploadFileParams           = providers.UploadFileParams
 )
 
 // Message types.
