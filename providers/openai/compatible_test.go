@@ -108,6 +108,19 @@ func TestNewCompatible(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})
+
+	t.Run("adds provider context to base URL errors", func(t *testing.T) {
+		t.Setenv("TEST_BASE_URL", "://invalid")
+
+		provider, err := NewCompatible(CompatibleConfig{
+			Name:          "test-provider",
+			BaseURLEnvVar: "TEST_BASE_URL",
+			DefaultAPIKey: "test-key",
+		})
+		require.Nil(t, provider)
+		require.ErrorContains(t, err, "resolving test-provider base URL")
+		require.ErrorContains(t, err, "invalid base URL")
+	})
 }
 
 func TestNewCompatibleRequireBaseURL(t *testing.T) {

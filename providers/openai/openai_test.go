@@ -94,7 +94,7 @@ func TestConvertParams(t *testing.T) {
 
 		req := convertParams(params)
 
-		require.Equal(t, "gpt-4", string(req.Model))
+		require.Equal(t, "gpt-4", req.Model)
 		require.Len(t, req.Messages, 1)
 	})
 
@@ -513,7 +513,7 @@ func TestIntegrationCompletion(t *testing.T) {
 	require.NotEmpty(t, resp.Choices[0].Message.Content)
 	require.Equal(t, providers.RoleAssistant, resp.Choices[0].Message.Role)
 	require.NotNil(t, resp.Usage)
-	require.Greater(t, resp.Usage.TotalTokens, 0)
+	require.Positive(t, resp.Usage.TotalTokens)
 }
 
 func TestIntegrationCompletionStream(t *testing.T) {
@@ -549,7 +549,7 @@ func TestIntegrationCompletionStream(t *testing.T) {
 	err = <-errs
 	require.NoError(t, err)
 
-	require.Greater(t, chunkCount, 0)
+	require.Positive(t, chunkCount)
 	require.NotEmpty(t, content.String())
 }
 
@@ -771,7 +771,7 @@ func TestIntegrationEmbedding(t *testing.T) {
 
 	require.Equal(t, "list", resp.Object)
 	require.Len(t, resp.Data, 1)
-	require.Greater(t, len(resp.Data[0].Embedding), 0)
+	require.NotEmpty(t, resp.Data[0].Embedding)
 	require.NotNil(t, resp.Usage)
 }
 
@@ -790,7 +790,7 @@ func TestIntegrationListModels(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, "list", resp.Object)
-	require.Greater(t, len(resp.Data), 0)
+	require.NotEmpty(t, resp.Data)
 
 	// Check that some expected models are present.
 	modelIDs := make([]string, len(resp.Data))
@@ -912,12 +912,12 @@ func TestConvertError(t *testing.T) {
 			result := p.ConvertError(tc.err)
 
 			if tc.wantSentinel == nil {
-				require.Nil(t, result)
+				require.NoError(t, result)
 				return
 			}
 
-			require.NotNil(t, result)
-			require.True(t, stderrors.Is(result, tc.wantSentinel), "expected error to match %v", tc.wantSentinel)
+			require.Error(t, result)
+			require.ErrorIs(t, result, tc.wantSentinel)
 
 			// Verify the provider name is set in the error message.
 			require.Contains(t, result.Error(), "["+providerName+"]")
@@ -935,7 +935,7 @@ func newTestAPIError(t *testing.T, statusCode int, code string) *openai.Error {
 		Code:       code,
 		Message:    "test error message",
 		Type:       "error",
-		Request:    &http.Request{Method: "POST", URL: testURL},
+		Request:    &http.Request{Method: http.MethodPost, URL: testURL},
 		Response:   &http.Response{StatusCode: statusCode},
 	}
 }
