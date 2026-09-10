@@ -1,6 +1,7 @@
 package mistral
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -137,6 +138,150 @@ func TestCompletionStreamReplaysThinkingContent(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rawRequest, &request))
 	require.Len(t, request.Messages, 1)
 	require.JSONEq(t, mistralThinkingContent, string(request.Messages[0].Content))
+}
+
+func TestCompletionReplaysUnsignedNormalizedReasoningFullRequest(t *testing.T) {
+	t.Parallel()
+
+	serverURL, capturedBody := testutil.FakeCompletionServer(t)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	params := providers.CompletionParams{
+		Model: mistralReasoningModel,
+		Messages: []providers.Message{
+			{
+				Role:      providers.RoleAssistant,
+				Content:   "Answer.",
+				Reasoning: &providers.Reasoning{Content: "Prior thinking."},
+			},
+			{Role: providers.RoleUser, Content: "Continue."},
+		},
+	}
+	before, err := json.Marshal(params)
+	require.NoError(t, err)
+
+	_, err = provider.Completion(t.Context(), params)
+	require.NoError(t, err)
+
+	after, err := json.Marshal(params)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(before, after), "completion mutated caller params")
+	require.Equal(t, map[string]any{
+		"model": mistralReasoningModel,
+		"messages": []any{
+			map[string]any{
+				"role": providers.RoleAssistant,
+				"content": []any{
+					map[string]any{
+						"type": "thinking",
+						"thinking": []any{
+							map[string]any{"type": "text", "text": "Prior thinking."},
+						},
+					},
+					map[string]any{"type": "text", "text": "Answer."},
+				},
+			},
+			map[string]any{"role": providers.RoleUser, "content": "Continue."},
+		},
+	}, capturedBody())
+}
+
+func TestCompletionStreamReplaysUnsignedNormalizedReasoningFullRequest(t *testing.T) {
+	t.Parallel()
+
+	serverURL, capturedBody := testutil.FakeStreamingServer(t)
+	provider, err := New(
+		config.WithAPIKey("test-key"),
+		config.WithBaseURL(serverURL),
+	)
+	require.NoError(t, err)
+
+	params := providers.CompletionParams{
+		Model: mistralReasoningModel,
+		Messages: []providers.Message{{
+			Role:      providers.RoleAssistant,
+			Content:   "Answer.",
+			Reasoning: &providers.Reasoning{Content: "Prior thinking."},
+		}},
+	}
+	before, err := json.Marshal(params)
+	require.NoError(t, err)
+
+	chunks, errs := provider.CompletionStream(t.Context(), params)
+	for range chunks {
+		// Drain the channel before checking the terminal stream error.
+	}
+	require.NoError(t, <-errs)
+
+	after, err := json.Marshal(params)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(before, after), "streaming completion mutated caller params")
+	require.Equal(t, map[string]any{
+		"model":  mistralReasoningModel,
+		"stream": true,
+		"messages": []any{map[string]any{
+			"role": providers.RoleAssistant,
+			"content": []any{
+				map[string]any{
+					"type": "thinking",
+					"thinking": []any{
+						map[string]any{"type": "text", "text": "Prior thinking."},
+					},
+				},
+				map[string]any{"type": "text", "text": "Answer."},
+			},
+		}},
+	}, capturedBody())
+}
+
+func TestCompletionLeavesNilAndEmptyReasoningUnchanged(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		reasoning *providers.Reasoning
+	}{
+		{name: "nil reasoning"},
+		{name: "empty reasoning", reasoning: &providers.Reasoning{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			serverURL, capturedBody := testutil.FakeCompletionServer(t)
+			provider, err := New(
+				config.WithAPIKey("test-key"),
+				config.WithBaseURL(serverURL),
+			)
+			require.NoError(t, err)
+
+			params := providers.CompletionParams{
+				Model: mistralReasoningModel,
+				Messages: []providers.Message{{
+					Role: providers.RoleAssistant, Content: "Answer.", Reasoning: test.reasoning,
+				}},
+			}
+			before, err := json.Marshal(params)
+			require.NoError(t, err)
+
+			_, err = provider.Completion(t.Context(), params)
+			require.NoError(t, err)
+
+			after, err := json.Marshal(params)
+			require.NoError(t, err)
+			require.True(t, bytes.Equal(before, after), "completion mutated caller params")
+			require.Equal(t, map[string]any{
+				"model": mistralReasoningModel,
+				"messages": []any{map[string]any{
+					"role": providers.RoleAssistant, "content": "Answer.",
+				}},
+			}, capturedBody())
+		})
+	}
 }
 
 func TestCompletionRejectsInvalidThinkingReplay(t *testing.T) {

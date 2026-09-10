@@ -13,8 +13,36 @@ func replayReasoning(
 	converted []oaisdk.ChatCompletionMessageParamUnion,
 ) error {
 	for messageIndex, message := range messages {
-		if message.Role != providers.RoleAssistant || message.Reasoning == nil ||
-			len(message.Reasoning.ProviderRaw) == 0 {
+		if message.Role != providers.RoleAssistant || message.Reasoning == nil {
+			continue
+		}
+		if len(message.Reasoning.ProviderRaw) == 0 {
+			if message.Reasoning.Content == "" {
+				continue
+			}
+
+			answer, isText := message.Content.(string)
+			if message.Content != nil && !isText {
+				continue
+			}
+
+			content := []map[string]any{{
+				"type": "thinking",
+				"thinking": []map[string]string{{
+					"type": "text",
+					"text": message.Reasoning.Content,
+				}},
+			}}
+			if answer != "" {
+				content = append(content, map[string]any{
+					"type": "text",
+					"text": answer,
+				})
+			}
+
+			assistant := converted[messageIndex].OfAssistant
+			assistant.SetExtraFields(map[string]any{"content": content})
+
 			continue
 		}
 
