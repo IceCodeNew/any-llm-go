@@ -180,12 +180,12 @@ func (p *CompatibleProvider) Completion(
 ) (*providers.ChatCompletion, error) {
 	converter := p.messageConverter()
 
-	err := validateCompletionParamsWith(params, converter)
+	messages, err := validateCompletionParamsWith(params, converter)
 	if err != nil {
 		return nil, err
 	}
 
-	req := convertParamsWith(params, converter)
+	req := convertParamsWith(params, messages)
 	if p.compatibleConfig.ChatCompletionRequestTransform != nil {
 		if transformErr := p.compatibleConfig.ChatCompletionRequestTransform(params, &req); transformErr != nil {
 			return nil, transformErr
@@ -221,13 +221,13 @@ func (p *CompatibleProvider) CompletionStream(
 
 		converter := p.messageConverter()
 
-		err := validateCompletionParamsWith(params, converter)
+		messages, err := validateCompletionParamsWith(params, converter)
 		if err != nil {
 			errs <- err
 			return
 		}
 
-		req := convertParamsWith(params, converter)
+		req := convertParamsWith(params, messages)
 		if p.compatibleConfig.ChatCompletionRequestTransform != nil {
 			if err := p.compatibleConfig.ChatCompletionRequestTransform(params, &req); err != nil {
 				errs <- err
@@ -408,15 +408,14 @@ func convertChunk(chunk *openai.ChatCompletionChunk) providers.ChatCompletionChu
 
 // convertParams converts providers.CompletionParams to OpenAI request parameters.
 func convertParams(params providers.CompletionParams) openai.ChatCompletionNewParams {
-	return convertParamsWith(params, convertOpenAIMessage)
+	messages, _ := convertMessagesWith(params.Messages, convertOpenAIMessage)
+	return convertParamsWith(params, messages)
 }
 
 func convertParamsWith(
 	params providers.CompletionParams,
-	converter chatCompletionMessageConverter,
+	messages []openai.ChatCompletionMessageParamUnion,
 ) openai.ChatCompletionNewParams {
-	messages, _ := convertMessagesWith(params.Messages, converter) // Error already checked during validation.
-
 	req := openai.ChatCompletionNewParams{
 		Model:    params.Model,
 		Messages: messages,
@@ -697,37 +696,35 @@ func validateCompatibleConfig(cfg CompatibleConfig) error {
 
 // validateCompletionParams validates completion parameters.
 func validateCompletionParams(params providers.CompletionParams) error {
-	return validateCompletionParamsWith(params, convertOpenAIMessage)
+	_, err := validateCompletionParamsWith(params, convertOpenAIMessage)
+	return err
 }
 
 func validateCompletionParamsWith(
 	params providers.CompletionParams,
 	converter chatCompletionMessageConverter,
-) error {
+) ([]openai.ChatCompletionMessageParamUnion, error) {
 	if params.Model == "" {
-		return errors.NewInvalidRequestError("", stderrors.New("model is required"))
+		return nil, errors.NewInvalidRequestError("", stderrors.New("model is required"))
 	}
 	if len(params.Messages) == 0 {
-		return errors.NewInvalidRequestError("", stderrors.New("at least one message is required"))
+		return nil, errors.NewInvalidRequestError("", stderrors.New("at least one message is required"))
 	}
 
 	if params.TopLogprobs != nil {
 		if *params.TopLogprobs < 0 || *params.TopLogprobs > 20 {
-			return errors.NewInvalidRequestError("", stderrors.New("top_logprobs must be between 0 and 20"))
+			return nil, errors.NewInvalidRequestError("", stderrors.New("top_logprobs must be between 0 and 20"))
 		}
 
 		if params.Logprobs == nil || !*params.Logprobs {
-			return errors.NewInvalidRequestError("", stderrors.New("top_logprobs requires logprobs to be true"))
+			return nil, errors.NewInvalidRequestError("", stderrors.New("top_logprobs requires logprobs to be true"))
 		}
 	}
 
-	// Validate message roles.
-	for _, msg := range params.Messages {
-		_, err := converter(msg)
-		if err != nil {
-			return errors.NewInvalidRequestError("", err)
-		}
+	messages, err := convertMessagesWith(params.Messages, converter)
+	if err != nil {
+		return nil, errors.NewInvalidRequestError("", err)
 	}
 
-	return nil
+	return messages, nil
 }

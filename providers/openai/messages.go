@@ -224,14 +224,15 @@ func convertMessagesWith(
 }
 
 func convertCompatibleUserMessage(msg providers.Message) openai.ChatCompletionMessageParamUnion {
-	if !msg.IsMultiModal() {
+	content := msg.ContentParts()
+	if content == nil {
 		return openai.UserMessage(msg.ContentString())
 	}
 
 	// Preserve the package's historical compatible-provider schema. OpenAI-only
 	// fields remain gated until each provider's public contract confirms them.
-	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(msg.ContentParts()))
-	for _, part := range msg.ContentParts() {
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(content))
+	for _, part := range content {
 		switch part.Type {
 		case contentTypeText:
 			parts = append(parts, openai.TextContentPart(part.Text))
@@ -248,7 +249,8 @@ func convertCompatibleUserMessage(msg providers.Message) openai.ChatCompletionMe
 }
 
 func convertOpenAIUserMessage(msg providers.Message) (openai.ChatCompletionMessageParamUnion, error) {
-	if !msg.IsMultiModal() {
+	content := msg.ContentParts()
+	if content == nil {
 		message := openai.UserMessage(msg.ContentString())
 		if msg.Name != "" {
 			message.OfUser.Name = openai.String(msg.Name)
@@ -257,8 +259,8 @@ func convertOpenAIUserMessage(msg providers.Message) (openai.ChatCompletionMessa
 		return message, nil
 	}
 
-	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(msg.ContentParts()))
-	for _, part := range msg.ContentParts() {
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(content))
+	for _, part := range content {
 		switch part.Type {
 		case contentTypeText:
 			if part.ImageURL != nil {
