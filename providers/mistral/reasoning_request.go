@@ -23,7 +23,10 @@ func replayReasoning(
 
 			answer, isText := message.Content.(string)
 			if message.Content != nil && !isText {
-				continue
+				return fmt.Errorf(
+					"encoding Mistral message %d: reasoning replay requires string or nil content",
+					messageIndex,
+				)
 			}
 
 			content := []map[string]any{{

@@ -317,6 +317,11 @@ func TestCompletionRejectsInvalidThinkingReplay(t *testing.T) {
 			content: []providers.ContentPart{{Type: "text", Text: "the answer"}},
 			wantErr: "reasoning replay requires string or nil content",
 		},
+		{
+			name:    "unsigned multipart content",
+			content: []providers.ContentPart{{Type: "text", Text: "the answer"}},
+			wantErr: "reasoning replay requires string or nil content",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
