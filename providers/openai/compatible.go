@@ -346,7 +346,8 @@ func (p *CompatibleProvider) UploadFile(
 		return nil, p.ConvertError(err)
 	}
 
-	return convertFile(resp)
+	result, err := convertFile(resp)
+	return result, p.ConvertError(err)
 }
 
 // ListFiles lists one page from an OpenAI-compatible Files API.
@@ -380,7 +381,8 @@ func (p *CompatibleProvider) ListFiles(
 		return nil, p.ConvertError(err)
 	}
 
-	return convertFileList(resp)
+	result, err := convertFileList(resp)
+	return result, p.ConvertError(err)
 }
 
 // RetrieveFile returns metadata for an uploaded file.
@@ -394,7 +396,8 @@ func (p *CompatibleProvider) RetrieveFile(ctx context.Context, fileID string) (*
 		return nil, p.ConvertError(err)
 	}
 
-	return convertFile(resp)
+	result, err := convertFile(resp)
+	return result, p.ConvertError(err)
 }
 
 // DeleteFile deletes an uploaded file.
@@ -408,7 +411,8 @@ func (p *CompatibleProvider) DeleteFile(ctx context.Context, fileID string) (*pr
 		return nil, p.ConvertError(err)
 	}
 
-	return convertDeletedFile(resp)
+	result, err := convertDeletedFile(resp)
+	return result, p.ConvertError(err)
 }
 
 func convertFile(source *openai.FileObject) (*providers.File, error) {

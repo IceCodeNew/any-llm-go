@@ -2,6 +2,7 @@ package deepseek
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,20 +138,50 @@ func TestFileAPIErrorsUseNormalizedErrorMapping(t *testing.T) {
 	require.ErrorIs(t, err, llmerrors.ErrRateLimit)
 }
 
-func TestRetrieveFileRejectsMalformedResponse(t *testing.T) {
+func TestFileOperationsAttributeMalformedResponses(t *testing.T) {
 	t.Parallel()
 
-	client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Body.WriteString(`{"id":"file-api-one","bytes":"invalid"}`)
-	})}
-	provider, err := New(
-		config.WithAPIKey("test-key"),
-		config.WithBaseURL("http://test"),
-		config.WithHTTPClient(client),
-	)
-	require.NoError(t, err)
+	for _, operation := range []string{"upload", "retrieve", "list", "delete"} {
+		for _, payload := range []string{
+			`{"id":"file-api-one","object":"file"}`,
+			`{"id":"file-api-one","object":"file","bytes":"invalid","deleted":"invalid"}`,
+		} {
+			t.Run(operation+"/"+payload, func(t *testing.T) {
+				t.Parallel()
 
-	_, err = provider.RetrieveFile(t.Context(), "file-api-one")
-	require.Error(t, err)
+				client := &http.Client{Transport: syncHTTPHandler(func(w *httptest.ResponseRecorder, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if operation == "list" {
+						w.Body.WriteString(`{"object":"list","data":[` + payload + `],"has_more":false}`)
+					} else {
+						w.Body.WriteString(payload)
+					}
+				})}
+				provider, err := New(
+					config.WithAPIKey("test-key"),
+					config.WithBaseURL("http://test"),
+					config.WithHTTPClient(client),
+				)
+				require.NoError(t, err)
+
+				switch operation {
+				case "upload":
+					_, err = provider.UploadFile(t.Context(), providers.UploadFileParams{
+						File: strings.NewReader("x"), Purpose: providers.FilePurposeUserData,
+					})
+				case "retrieve":
+					_, err = provider.RetrieveFile(t.Context(), "file-api-one")
+				case "list":
+					_, err = provider.ListFiles(t.Context(), providers.ListFilesOptions{})
+				case "delete":
+					_, err = provider.DeleteFile(t.Context(), "file-api-one")
+				}
+
+				providerErr, ok := errors.AsType[*llmerrors.ProviderError](err)
+				require.True(t, ok, "error lacks provider attribution: %v", err)
+				require.Equal(t, "deepseek", providerErr.Provider)
+				require.NotNil(t, errors.Unwrap(providerErr))
+			})
+		}
+	}
 }
