@@ -236,7 +236,7 @@ func TestValidateCompletionParams(t *testing.T) {
 			Messages: []providers.Message{{Role: providers.RoleUser, Content: "Hello"}},
 		}
 
-		err := validateCompletionParams(params)
+		_, err := validateCompletionParamsWith(params, convertOpenAIMessage)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "model is required")
 	})
@@ -249,7 +249,7 @@ func TestValidateCompletionParams(t *testing.T) {
 			Messages: []providers.Message{},
 		}
 
-		err := validateCompletionParams(params)
+		_, err := validateCompletionParamsWith(params, convertOpenAIMessage)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "at least one message is required")
 	})
@@ -264,7 +264,7 @@ func TestValidateCompletionParams(t *testing.T) {
 			},
 		}
 
-		err := validateCompletionParams(params)
+		_, err := validateCompletionParamsWith(params, convertOpenAIMessage)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unknown message role")
 	})
@@ -279,7 +279,7 @@ func TestValidateCompletionParams(t *testing.T) {
 			},
 		}
 
-		err := validateCompletionParams(params)
+		_, err := validateCompletionParamsWith(params, convertOpenAIMessage)
 		require.NoError(t, err)
 	})
 }

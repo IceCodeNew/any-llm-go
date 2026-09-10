@@ -27,7 +27,7 @@ func TestConvertParamsPreservesLogprobControls(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			body, err := json.Marshal(convertParams(providers.CompletionParams{
+			body, err := json.Marshal(checkedParams(t, providers.CompletionParams{
 				Model:       "gpt-5.6",
 				Messages:    []providers.Message{{Role: providers.RoleUser, Content: "hello"}},
 				Logprobs:    tc.logprobs,
@@ -67,12 +67,12 @@ func TestValidateCompletionParamsRejectsInvalidLogprobControls(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validateCompletionParams(providers.CompletionParams{
+			_, err := validateCompletionParamsWith(providers.CompletionParams{
 				Model:       "gpt-5.6",
 				Messages:    []providers.Message{{Role: providers.RoleUser, Content: "hello"}},
 				Logprobs:    tc.logprobs,
 				TopLogprobs: &tc.topLogprobs,
-			})
+			}, convertOpenAIMessage)
 			require.ErrorIs(t, err, llmerrors.ErrInvalidRequest)
 		})
 	}

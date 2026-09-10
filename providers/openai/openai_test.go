@@ -80,6 +80,13 @@ func TestCapabilities(t *testing.T) {
 	require.True(t, caps.ListModels)
 }
 
+func checkedParams(t *testing.T, params providers.CompletionParams) openai.ChatCompletionNewParams {
+	t.Helper()
+	messages, err := validateCompletionParamsWith(params, convertOpenAIMessage)
+	require.NoError(t, err)
+	return convertParamsWith(params, messages)
+}
+
 func TestConvertParams(t *testing.T) {
 	t.Parallel()
 
@@ -92,7 +99,7 @@ func TestConvertParams(t *testing.T) {
 			},
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.Equal(t, "gpt-4", req.Model)
 		require.Len(t, req.Messages, 1)
@@ -110,7 +117,7 @@ func TestConvertParams(t *testing.T) {
 			TopP:        &topP,
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.Equal(t, 0.7, req.Temperature.Value)
 		require.Equal(t, 0.9, req.TopP.Value)
@@ -126,7 +133,7 @@ func TestConvertParams(t *testing.T) {
 			MaxTokens: &maxTokens,
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.False(t, req.MaxTokens.Valid())
 		require.Equal(t, int64(100), req.MaxCompletionTokens.Value)
@@ -141,7 +148,7 @@ func TestConvertParams(t *testing.T) {
 			Stop:     []string{"END", "STOP"},
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.NotNil(t, req.Stop)
 	})
@@ -155,7 +162,7 @@ func TestConvertParams(t *testing.T) {
 			Tools:    []providers.Tool{testutil.WeatherTool()},
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.Len(t, req.Tools, 1)
 	})
@@ -170,7 +177,7 @@ func TestConvertParams(t *testing.T) {
 			ToolChoice: "auto",
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.NotNil(t, req.ToolChoice)
 	})
@@ -185,7 +192,7 @@ func TestConvertParams(t *testing.T) {
 			ToolChoice: "required",
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.NotNil(t, req.ToolChoice)
 	})
@@ -203,7 +210,7 @@ func TestConvertParams(t *testing.T) {
 			},
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.NotNil(t, req.ToolChoice)
 	})
@@ -219,7 +226,7 @@ func TestConvertParams(t *testing.T) {
 			},
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.NotNil(t, req.ResponseFormat)
 	})
@@ -243,7 +250,7 @@ func TestConvertParams(t *testing.T) {
 				ReasoningEffort: effort,
 			}
 
-			req := convertParams(params)
+			req := checkedParams(t, params)
 
 			require.Equal(t, string(effort), string(req.ReasoningEffort))
 		}
@@ -258,7 +265,7 @@ func TestConvertParams(t *testing.T) {
 			ReasoningEffort: providers.ReasoningEffortAuto,
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.Empty(t, req.ReasoningEffort)
 	})
@@ -273,7 +280,7 @@ func TestConvertParams(t *testing.T) {
 			Seed:     &seed,
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.Equal(t, int64(42), req.Seed.Value)
 	})
@@ -287,7 +294,7 @@ func TestConvertParams(t *testing.T) {
 			User:     "test-user",
 		}
 
-		req := convertParams(params)
+		req := checkedParams(t, params)
 
 		require.Equal(t, "test-user", req.User.Value)
 	})

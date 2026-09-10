@@ -406,12 +406,6 @@ func convertChunk(chunk *openai.ChatCompletionChunk) providers.ChatCompletionChu
 	return result
 }
 
-// convertParams converts providers.CompletionParams to OpenAI request parameters.
-func convertParams(params providers.CompletionParams) openai.ChatCompletionNewParams {
-	messages, _ := convertMessagesWith(params.Messages, convertOpenAIMessage)
-	return convertParamsWith(params, messages)
-}
-
 func convertParamsWith(
 	params providers.CompletionParams,
 	messages []openai.ChatCompletionMessageParamUnion,
@@ -692,12 +686,6 @@ func validateCompatibleConfig(cfg CompatibleConfig) error {
 		return stderrors.New("provider name is required")
 	}
 	return nil
-}
-
-// validateCompletionParams validates completion parameters.
-func validateCompletionParams(params providers.CompletionParams) error {
-	_, err := validateCompletionParamsWith(params, convertOpenAIMessage)
-	return err
 }
 
 func validateCompletionParamsWith(
