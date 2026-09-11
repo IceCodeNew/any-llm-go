@@ -835,8 +835,14 @@ func TestCompletionThinkingWireContract(t *testing.T) {
 func TestCompletionStreamPreservesAsymmetricGeminiOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"reason-17\",\"thought\":true},{\"text\":\"answer-29\"}]}}]}\n\n")
-		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"left\":17,\"right\":\"q29\"}},\"thoughtSignature\":\"AQIDBA==\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":11,\"thoughtsTokenCount\":3}}\n\n")
+		_, _ = io.WriteString(
+			w,
+			"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"reason-17\",\"thought\":true},{\"text\":\"answer-29\"}]}}]}\n\n",
+		)
+		_, _ = io.WriteString(
+			w,
+			"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"left\":17,\"right\":\"q29\"}},\"thoughtSignature\":\"AQIDBA==\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":11,\"thoughtsTokenCount\":3}}\n\n",
+		)
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("GOOGLE_GEMINI_BASE_URL", server.URL)
@@ -878,7 +884,11 @@ func TestCompletionStreamPreservesAsymmetricGeminiOutput(t *testing.T) {
 	require.JSONEq(t, `{"left":17,"right":"q29"}`, toolCalls[0].Function.Arguments)
 	require.Equal(t, "AQIDBA==", toolCalls[0].Extra[providerName][extraKeyThoughtSignature])
 	require.Equal(t, providers.FinishReasonToolCalls, finishReason)
-	require.Equal(t, &providers.Usage{PromptTokens: 7, CompletionTokens: 11, TotalTokens: 18, ReasoningTokens: 3}, usage)
+	require.Equal(
+		t,
+		&providers.Usage{PromptTokens: 7, CompletionTokens: 11, TotalTokens: 18, ReasoningTokens: 3},
+		usage,
+	)
 }
 
 func TestConvertImagePart(t *testing.T) {
