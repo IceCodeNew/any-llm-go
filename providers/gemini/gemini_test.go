@@ -832,6 +832,55 @@ func TestCompletionThinkingWireContract(t *testing.T) {
 	}
 }
 
+func TestCompletionStreamPreservesAsymmetricGeminiOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"reason-17\",\"thought\":true},{\"text\":\"answer-29\"}]}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"left\":17,\"right\":\"q29\"}},\"thoughtSignature\":\"AQIDBA==\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":11,\"thoughtsTokenCount\":3}}\n\n")
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GOOGLE_GEMINI_BASE_URL", server.URL)
+
+	provider, err := New(config.WithAPIKey("test-key"))
+	require.NoError(t, err)
+	chunks, errs := provider.CompletionStream(t.Context(), providers.CompletionParams{
+		Model:    "gemini-2.5-flash",
+		Messages: []providers.Message{{Role: providers.RoleUser, Content: "asymmetric-73"}},
+	})
+
+	var content, reasoning string
+	var toolCalls []providers.ToolCall
+	var finishReason string
+	var usage *providers.Usage
+	for chunk := range chunks {
+		for _, choice := range chunk.Choices {
+			content += choice.Delta.Content
+			if choice.Delta.Reasoning != nil {
+				reasoning += choice.Delta.Reasoning.Content
+			}
+			toolCalls = append(toolCalls, choice.Delta.ToolCalls...)
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+	}
+	for streamErr := range errs {
+		require.NoError(t, streamErr)
+	}
+
+	require.Equal(t, "answer-29", content)
+	require.Equal(t, "reason-17", reasoning)
+	require.Len(t, toolCalls, 1)
+	require.Equal(t, "lookup", toolCalls[0].Function.Name)
+	require.JSONEq(t, `{"left":17,"right":"q29"}`, toolCalls[0].Function.Arguments)
+	require.Equal(t, "AQIDBA==", toolCalls[0].Extra[providerName][extraKeyThoughtSignature])
+	require.Equal(t, providers.FinishReasonToolCalls, finishReason)
+	require.Equal(t, &providers.Usage{PromptTokens: 7, CompletionTokens: 11, TotalTokens: 18, ReasoningTokens: 3}, usage)
+}
+
 func TestConvertImagePart(t *testing.T) {
 	t.Parallel()
 
@@ -918,7 +967,7 @@ func TestNewStreamState(t *testing.T) {
 	require.NotNil(t, state)
 	require.Equal(t, "gemini-1.5-flash", state.model)
 	require.True(t, strings.HasPrefix(state.messageID, idPrefixCompletion))
-	require.Nil(t, state.toolCalls)
+	require.False(t, state.hasToolCalls)
 	require.Nil(t, state.usage)
 }
 
@@ -1377,9 +1426,7 @@ func TestStreamStateFinalChunk(t *testing.T) {
 		state, err := newStreamState("test-model")
 		require.NoError(t, err)
 		state.finishReason = genai.FinishReasonStop
-		state.toolCalls = []providers.ToolCall{
-			{ID: "call_1", Type: "function", Function: providers.FunctionCall{Name: "get_weather"}},
-		}
+		state.hasToolCalls = true
 
 		chunk := state.finalChunk()
 		require.Equal(t, providers.FinishReasonToolCalls, chunk.Choices[0].FinishReason)

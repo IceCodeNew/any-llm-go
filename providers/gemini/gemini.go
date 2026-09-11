@@ -103,10 +103,9 @@ type Provider struct {
 type streamState struct {
 	content      strings.Builder
 	finishReason genai.FinishReason
+	hasToolCalls bool
 	messageID    string
 	model        string
-	reasoning    strings.Builder
-	toolCalls    []providers.ToolCall
 	usage        *providers.Usage
 }
 
@@ -440,7 +439,7 @@ func (s *streamState) finalChunk() *providers.ChatCompletionChunk {
 	chunk := s.chunk(providers.ChunkDelta{})
 
 	finishReason := convertFinishReason(s.finishReason)
-	if len(s.toolCalls) > 0 && finishReason == providers.FinishReasonStop {
+	if s.hasToolCalls && finishReason == providers.FinishReasonStop {
 		finishReason = providers.FinishReasonToolCalls
 	}
 
@@ -489,12 +488,11 @@ func (s *streamState) processResponse(resp *genai.GenerateContentResponse) ([]pr
 				setProviderExtra(&toolCall, providerName, extraKeyThoughtSignature,
 					base64.StdEncoding.EncodeToString(part.ThoughtSignature))
 			}
-			s.toolCalls = append(s.toolCalls, toolCall)
+			s.hasToolCalls = true
 			result = append(result, s.chunk(providers.ChunkDelta{
 				ToolCalls: []providers.ToolCall{toolCall},
 			}))
 		case part.Thought:
-			s.reasoning.WriteString(part.Text)
 			result = append(result, s.chunk(providers.ChunkDelta{
 				Reasoning: &providers.Reasoning{Content: part.Text},
 			}))
