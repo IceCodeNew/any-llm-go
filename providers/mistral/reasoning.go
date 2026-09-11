@@ -164,6 +164,7 @@ func decodeContent(
 		reasoning = &providers.Reasoning{
 			Content:     strings.Join(reasoningParts, "\n"),
 			ProviderRaw: bytes.Clone(raw),
+			Provider:    providerName,
 		}
 	}
 

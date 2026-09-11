@@ -103,6 +103,32 @@ func TestCompletionReplaysThinkingContent(t *testing.T) {
 	require.JSONEq(t, mistralThinkingContent, string(request.Messages[1].Content))
 }
 
+func TestCompletionUsesPortableReasoningForForeignProviderRaw(t *testing.T) {
+	t.Parallel()
+
+	serverURL, capturedRequest := mistralReplayServer(t)
+	provider, err := New(config.WithAPIKey("test-key"), config.WithBaseURL(serverURL))
+	require.NoError(t, err)
+
+	_, err = provider.Completion(t.Context(), providers.CompletionParams{
+		Model: mistralReasoningModel,
+		Messages: []providers.Message{{
+			Role:    providers.RoleAssistant,
+			Content: "answer",
+			Reasoning: &providers.Reasoning{
+				Content:     "thought",
+				ProviderRaw: json.RawMessage(`[{"type":"thinking","thinking":"anthropic"}]`),
+				Provider:    "anthropic",
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `[
+		{"type":"thinking","thinking":[{"type":"text","text":"thought"}]},
+		{"type":"text","text":"answer"}
+	]`, string(capturedRequest().Messages[0].Content))
+}
+
 func TestCompletionStreamReplaysThinkingContent(t *testing.T) {
 	t.Parallel()
 
@@ -121,6 +147,7 @@ func TestCompletionStreamReplaysThinkingContent(t *testing.T) {
 			Reasoning: &providers.Reasoning{
 				Content:     "step one\nstep two",
 				ProviderRaw: json.RawMessage(mistralThinkingContent),
+				Provider:    providerName,
 			},
 		}},
 	})
@@ -342,6 +369,7 @@ func TestCompletionRejectsInvalidThinkingReplay(t *testing.T) {
 					Reasoning: &providers.Reasoning{
 						Content:     "thinking",
 						ProviderRaw: test.raw,
+						Provider:    providerName,
 					},
 				}},
 			}

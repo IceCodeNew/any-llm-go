@@ -93,7 +93,8 @@ func TestReasoningProviderRawRoundTrips(t *testing.T) {
 	t.Parallel()
 
 	reasoning := Reasoning{
-		Content: "step one",
+		Content:  "step one",
+		Provider: "mistral",
 		ProviderRaw: json.RawMessage(
 			`[{"type":"thinking","thinking":[{"type":"text","text":"step one"}],"signature":"sig-abc"}]`,
 		),

@@ -16,7 +16,7 @@ func replayReasoning(
 		if message.Role != providers.RoleAssistant || message.Reasoning == nil {
 			continue
 		}
-		if len(message.Reasoning.ProviderRaw) == 0 {
+		if message.Reasoning.Provider != providerName || len(message.Reasoning.ProviderRaw) == 0 {
 			if message.Reasoning.Content == "" {
 				continue
 			}

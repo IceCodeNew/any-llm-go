@@ -16,7 +16,7 @@ import (
 func reasoningDelta(index int, raw string, content string) providers.ChunkChoice {
 	var reasoning *providers.Reasoning
 	if raw != "" {
-		reasoning = &providers.Reasoning{ProviderRaw: json.RawMessage(raw)}
+		reasoning = &providers.Reasoning{ProviderRaw: json.RawMessage(raw), Provider: providerName}
 	}
 
 	return providers.ChunkChoice{
