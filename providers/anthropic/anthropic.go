@@ -336,6 +336,7 @@ func (s *streamState) handleMessageStop(message *anthropic.Message) (*providers.
 
 	chunk := s.chunk(providers.ChunkDelta{Reasoning: &providers.Reasoning{
 		ProviderRaw: reasoning.ProviderRaw,
+		Provider:    reasoning.Provider,
 	}})
 
 	return &chunk, nil
@@ -577,7 +578,7 @@ func applyResponseFormat(req *anthropic.MessageNewParams, format *providers.Resp
 
 // convertAssistantMessage converts an assistant message to Anthropic format.
 func convertAssistantMessage(msg providers.Message) (*anthropic.MessageParam, error) {
-	if msg.Reasoning != nil && len(msg.Reasoning.ProviderRaw) > 0 {
+	if msg.Reasoning != nil && msg.Reasoning.Provider == providerName && len(msg.Reasoning.ProviderRaw) > 0 {
 		content, err := replayAssistantContent(msg)
 		if err != nil {
 			return nil, err
@@ -873,7 +874,7 @@ func reasoningFromContent(blocks []anthropic.ContentBlockUnion) (*providers.Reas
 		return nil, err
 	}
 
-	return &providers.Reasoning{Content: reasoning, ProviderRaw: raw}, nil
+	return &providers.Reasoning{Content: reasoning, ProviderRaw: raw, Provider: providerName}, nil
 }
 
 func marshalContentSnapshot(blocks []anthropic.ContentBlockUnion) (json.RawMessage, error) {

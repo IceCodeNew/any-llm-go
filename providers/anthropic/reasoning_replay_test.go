@@ -100,7 +100,7 @@ func TestAssistantReasoningReplayRejectsUnsafeRawBlocks(t *testing.T) {
 	for _, raw := range tests {
 		_, err := convertAssistantMessage(providers.Message{
 			Role:      providers.RoleAssistant,
-			Reasoning: &providers.Reasoning{ProviderRaw: json.RawMessage(raw)},
+			Reasoning: &providers.Reasoning{ProviderRaw: json.RawMessage(raw), Provider: providerName},
 		})
 		require.ErrorIs(t, err, errors.ErrInvalidRequest, raw)
 	}
@@ -115,7 +115,7 @@ func TestReasoningReplayPreservesFutureFields(t *testing.T) {
 	]`)
 	message, err := convertAssistantMessage(providers.Message{
 		Role:      providers.RoleAssistant,
-		Reasoning: &providers.Reasoning{Content: "thought", ProviderRaw: raw},
+		Reasoning: &providers.Reasoning{Content: "thought", ProviderRaw: raw, Provider: providerName},
 	})
 	require.NoError(t, err)
 	wire, err := json.Marshal(message)
@@ -132,12 +132,31 @@ func TestReasoningReplayPreservesFutureFields(t *testing.T) {
 	require.JSONEq(t, string(raw), string(completion.Choices[0].Message.Reasoning.ProviderRaw))
 }
 
+func TestAssistantReasoningReplayIgnoresForeignProviderRaw(t *testing.T) {
+	t.Parallel()
+
+	message, err := convertAssistantMessage(providers.Message{
+		Role:    providers.RoleAssistant,
+		Content: "answer",
+		Reasoning: &providers.Reasoning{
+			Content:     "thought",
+			ProviderRaw: json.RawMessage(`{"not":"anthropic content"}`),
+			Provider:    "mistral",
+		},
+	})
+	require.NoError(t, err)
+
+	wire, err := json.Marshal(message)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"role":"assistant","content":[{"type":"text","text":"answer"}]}`, string(wire))
+}
+
 func TestAssistantReasoningReplayRejectsMalformedOrStaleRaw(t *testing.T) {
 	t.Parallel()
 
 	valid := providers.Message{
 		Role: providers.RoleAssistant, Content: "answer done",
-		Reasoning: &providers.Reasoning{Content: "first second", ProviderRaw: json.RawMessage(reasoningContentJSON)},
+		Reasoning: &providers.Reasoning{Content: "first second", ProviderRaw: json.RawMessage(reasoningContentJSON), Provider: providerName},
 		ToolCalls: []providers.ToolCall{{
 			ID: "tool-1", Type: "function",
 			Function: providers.FunctionCall{Name: "lookup", Arguments: `{"key":"value"}`},
@@ -197,7 +216,7 @@ func TestAssistantReasoningReplayComparesToolArgumentsAsJSON(t *testing.T) {
 	]`)
 	valid := providers.Message{
 		Role:      providers.RoleAssistant,
-		Reasoning: &providers.Reasoning{Content: "thought", ProviderRaw: raw},
+		Reasoning: &providers.Reasoning{Content: "thought", ProviderRaw: raw, Provider: providerName},
 		ToolCalls: []providers.ToolCall{{
 			ID: "tool-1", Type: "function",
 			Function: providers.FunctionCall{
@@ -289,7 +308,7 @@ func TestCompletionStreamEmitsCompletedReasoningSnapshotAndReplaysIt(t *testing.
 
 	replayed, err := convertAssistantMessage(providers.Message{
 		Role: providers.RoleAssistant, Content: content.String(),
-		Reasoning: &providers.Reasoning{Content: reasoningText.String(), ProviderRaw: raw},
+		Reasoning: &providers.Reasoning{Content: reasoningText.String(), ProviderRaw: raw, Provider: providerName},
 	})
 	require.NoError(t, err)
 	replayedJSON, err := json.Marshal(replayed)

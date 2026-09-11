@@ -82,6 +82,7 @@ func TestCompletionStreamToolReplayPreservesRawInput(t *testing.T) {
 					assembled.Reasoning.Content += d.Reasoning.Content
 					if len(d.Reasoning.ProviderRaw) > 0 {
 						assembled.Reasoning.ProviderRaw = d.Reasoning.ProviderRaw
+						assembled.Reasoning.Provider = d.Reasoning.Provider
 					}
 				}
 				for _, call := range d.ToolCalls {
