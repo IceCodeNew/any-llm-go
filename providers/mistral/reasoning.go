@@ -96,6 +96,11 @@ func transformChunk(source *oaisdk.ChatCompletionChunk, result *providers.ChatCo
 			result.Choices[choiceIndex].Delta.Content = *content
 		}
 
+		// The assembler needs text-array metadata even before thinking begins.
+		// It removes this text-only carrier before forwarding public chunks.
+		if reasoning == nil {
+			reasoning = &providers.Reasoning{ProviderRaw: delta.Content, Provider: providerName}
+		}
 		result.Choices[choiceIndex].Delta.Reasoning = reasoning
 	}
 

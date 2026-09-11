@@ -45,7 +45,8 @@ func assembleReasoningStream(
 					continue
 				}
 
-				accumulateReasoning(chunk, states)
+				chunk.Choices = slices.Clone(chunk.Choices)
+				accumulateReasoning(&chunk, states)
 				attachReasoningSnapshots(&chunk, states)
 
 				deferred := chunk
@@ -104,8 +105,9 @@ func assembleReasoningStream(
 	return chunks, errs
 }
 
-func accumulateReasoning(chunk providers.ChatCompletionChunk, states map[int]*streamedReasoning) {
-	for _, choice := range chunk.Choices {
+func accumulateReasoning(chunk *providers.ChatCompletionChunk, states map[int]*streamedReasoning) {
+	for choiceIndex := range chunk.Choices {
+		choice := &chunk.Choices[choiceIndex]
 		state := states[choice.Index]
 		if choice.Delta.Reasoning != nil && len(choice.Delta.Reasoning.ProviderRaw) > 0 {
 			var fragments []json.RawMessage
@@ -115,6 +117,7 @@ func accumulateReasoning(chunk providers.ChatCompletionChunk, states map[int]*st
 					states[choice.Index] = state
 				}
 
+				hasThinking := false
 				for _, fragment := range fragments {
 					state.chunks = append(state.chunks, fragment)
 
@@ -124,13 +127,22 @@ func accumulateReasoning(chunk providers.ChatCompletionChunk, states map[int]*st
 					}
 					if json.Unmarshal(fragment, &metadata) == nil && metadata.Type != nil &&
 						*metadata.Type == "thinking" {
+						hasThinking = true
 						state.closed = metadata.Closed != nil && *metadata.Closed
 					}
 				}
+				if !hasThinking {
+					choice.Delta.Reasoning = nil
+				}
 			}
+			continue
 		}
 
-		if state != nil && choice.Delta.Content != "" && choice.Delta.Reasoning == nil {
+		if choice.Delta.Content != "" && choice.Delta.Reasoning == nil {
+			if state == nil {
+				state = &streamedReasoning{}
+				states[choice.Index] = state
+			}
 			text, err := json.Marshal(struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
@@ -143,7 +155,6 @@ func accumulateReasoning(chunk providers.ChatCompletionChunk, states map[int]*st
 }
 
 func attachReasoningSnapshots(chunk *providers.ChatCompletionChunk, states map[int]*streamedReasoning) {
-	chunk.Choices = slices.Clone(chunk.Choices)
 	for choiceIndex := range chunk.Choices {
 		choice := &chunk.Choices[choiceIndex]
 

@@ -234,10 +234,10 @@ func TestReasoningAssemblyReopenedThinkingIsIncomplete(t *testing.T) {
 		`[{"type":"thinking","thinking":[]}]`,
 	} {
 		states := make(map[int]*streamedReasoning)
-		accumulateReasoning(providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{
+		accumulateReasoning(&providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{
 			reasoningDelta(0, `[{"type":"thinking","thinking":[],"closed":true}]`, ""),
 		}}, states)
-		accumulateReasoning(providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{
+		accumulateReasoning(&providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{
 			reasoningDelta(0, raw, ""),
 		}}, states)
 		terminal := providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{{Index: 0, FinishReason: "stop"}}}
@@ -253,7 +253,7 @@ func TestReasoningAssemblyOwnsDecodedFragments(t *testing.T) {
 	const second = `{"type":"text","text":"answer-29"}`
 	choice := reasoningDelta(7, "["+first+","+second+"]", "answer-29")
 	states := make(map[int]*streamedReasoning)
-	accumulateReasoning(providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{choice}}, states)
+	accumulateReasoning(&providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{choice}}, states)
 	clear(choice.Delta.Reasoning.ProviderRaw)
 
 	require.Len(t, states[7].chunks, 2)
