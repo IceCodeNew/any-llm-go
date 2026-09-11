@@ -246,6 +246,22 @@ func TestReasoningAssemblyReopenedThinkingIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestReasoningAssemblyOwnsDecodedFragments(t *testing.T) {
+	t.Parallel()
+
+	const first = `{"type":"thinking","thinking":[],"closed":true,"reference":9007199254740993}`
+	const second = `{"type":"text","text":"answer-29"}`
+	choice := reasoningDelta(7, "["+first+","+second+"]", "answer-29")
+	states := make(map[int]*streamedReasoning)
+	accumulateReasoning(providers.ChatCompletionChunk{Choices: []providers.ChunkChoice{choice}}, states)
+	clear(choice.Delta.Reasoning.ProviderRaw)
+
+	require.Len(t, states[7].chunks, 2)
+	require.Equal(t, first, string(states[7].chunks[0]))
+	require.Equal(t, second, string(states[7].chunks[1]))
+	require.True(t, states[7].closed)
+}
+
 func TestReasoningSnapshotPreservesDeltaText(t *testing.T) {
 	t.Parallel()
 

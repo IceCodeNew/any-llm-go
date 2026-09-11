@@ -1,7 +1,6 @@
 package mistral
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"slices"
@@ -117,7 +116,7 @@ func accumulateReasoning(chunk providers.ChatCompletionChunk, states map[int]*st
 				}
 
 				for _, fragment := range fragments {
-					state.chunks = append(state.chunks, bytes.Clone(fragment))
+					state.chunks = append(state.chunks, fragment)
 
 					var metadata struct {
 						Type   *string `json:"type"`
