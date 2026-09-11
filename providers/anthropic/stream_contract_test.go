@@ -21,6 +21,68 @@ const anthropicMessageStartSSE = "event: message_start\n" +
 	`"content":[],"model":"claude-opus-5","stop_reason":null,"stop_sequence":null,` +
 	`"usage":{"input_tokens":3,"output_tokens":0}}}` + "\n\n"
 
+func TestCompletionStreamKeepsIndexedToolArgumentsAcrossTextBlocks(t *testing.T) {
+	t.Parallel()
+
+	events := []string{
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool-A","name":"alpha","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"x\":"}}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"preface29"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"tool-B","name":"beta","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"17}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"y\":31}"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":11}}`,
+		`{"type":"message_stop"}`,
+	}
+	provider := newStreamTestProvider(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(writer, anthropicMessageStartSSE)
+		for _, event := range events {
+			var envelope struct{ Type string }
+			if err := json.Unmarshal([]byte(event), &envelope); err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = fmt.Fprintf(writer, "event: %s\ndata: %s\n\n", envelope.Type, event)
+		}
+	})
+	chunks, errs := provider.CompletionStream(t.Context(), streamTestParams())
+	arguments := map[string]string{}
+	var text string
+	for chunk := range chunks {
+		for _, choice := range chunk.Choices {
+			text += choice.Delta.Content
+			for _, tool := range choice.Delta.ToolCalls {
+				arguments[tool.ID] += tool.Function.Arguments
+			}
+		}
+	}
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, "preface29", text)
+	require.Equal(t, map[string]string{"tool-A": `{"x":17}`, "tool-B": `{"y":31}`}, arguments)
+}
+
+func TestCompletionPreservesModelNotFoundError(t *testing.T) {
+	t.Parallel()
+
+	provider := newStreamTestProvider(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(
+			writer,
+			`{"type":"error","error":{"type":"not_found_error","message":"model: missing-model"}}`,
+		)
+	})
+	_, err := provider.Completion(t.Context(), streamTestParams())
+	require.ErrorIs(t, err, errors.ErrModelNotFound)
+}
+
 func TestCompletionStreamRequiresMessageStop(t *testing.T) {
 	t.Parallel()
 

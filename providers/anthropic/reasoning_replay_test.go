@@ -155,8 +155,13 @@ func TestAssistantReasoningReplayRejectsMalformedOrStaleRaw(t *testing.T) {
 	t.Parallel()
 
 	valid := providers.Message{
-		Role: providers.RoleAssistant, Content: "answer done",
-		Reasoning: &providers.Reasoning{Content: "first second", ProviderRaw: json.RawMessage(reasoningContentJSON), Provider: providerName},
+		Role:    providers.RoleAssistant,
+		Content: "answer done",
+		Reasoning: &providers.Reasoning{
+			Content:     "first second",
+			ProviderRaw: json.RawMessage(reasoningContentJSON),
+			Provider:    providerName,
+		},
 		ToolCalls: []providers.ToolCall{{
 			ID: "tool-1", Type: "function",
 			Function: providers.FunctionCall{Name: "lookup", Arguments: `{"key":"value"}`},

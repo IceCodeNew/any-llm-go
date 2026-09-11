@@ -415,7 +415,7 @@ func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 
 		var state streamState
 
-		chunk := state.handleInputJSONDelta(`{"key":`)
+		chunk := state.handleInputJSONDelta("", `{"key":`)
 		require.Nil(t, chunk)
 	})
 
@@ -426,13 +426,12 @@ func TestStreamStateHandleInputJSONDelta(t *testing.T) {
 
 		state.messageID = "msg_123"
 		state.model = "claude-3"
-		state.currentToolID = "call_1"
 
-		chunk := state.handleInputJSONDelta(`{"location":`)
+		chunk := state.handleInputJSONDelta("call_1", `{"location":`)
 		require.NotNil(t, chunk)
 		require.Equal(t, `{"location":`, chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments)
 
-		chunk2 := state.handleInputJSONDelta(`"Paris"}`)
+		chunk2 := state.handleInputJSONDelta("call_1", `"Paris"}`)
 		require.NotNil(t, chunk2)
 		require.Equal(t, `"Paris"}`, chunk2.Choices[0].Delta.ToolCalls[0].Function.Arguments)
 	})
@@ -1409,9 +1408,14 @@ func TestConvertError(t *testing.T) {
 			wantSentinel: errors.ErrProvider,
 		},
 		{
-			name:         "not-found type remains ProviderError",
+			name:         "not-found type preserves ModelNotFoundError",
 			err:          newTestAPIError(t, http.StatusNotFound, "not_found_error"),
-			wantSentinel: errors.ErrProvider,
+			wantSentinel: errors.ErrModelNotFound,
+		},
+		{
+			name:         "unknown 404 body preserves ModelNotFoundError",
+			err:          newTestAPIError(t, http.StatusNotFound, "future_error"),
+			wantSentinel: errors.ErrModelNotFound,
 		},
 		{
 			name:         "request-too-large status remains ProviderError",

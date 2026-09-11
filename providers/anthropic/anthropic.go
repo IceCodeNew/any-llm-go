@@ -58,7 +58,6 @@ const (
 const (
 	eventContentBlockDelta = "content_block_delta"
 	eventContentBlockStart = "content_block_start"
-	eventContentBlockStop  = "content_block_stop"
 	eventMessageDelta      = "message_delta"
 	eventMessageStart      = "message_start"
 	eventMessageStop       = "message_stop"
@@ -96,10 +95,9 @@ type Provider struct {
 // streamState tracks accumulated state during streaming.
 // Note: Only accessed from a single goroutine, so no synchronization needed.
 type streamState struct {
-	messageID     string
-	model         string
-	currentToolID string
-	inputUsage    int64
+	messageID  string
+	model      string
+	inputUsage int64
 }
 
 // New creates a new Anthropic provider.
@@ -283,11 +281,8 @@ func (p *Provider) CompletionStream(
 			case eventContentBlockStart:
 				chunk = state.handleContentBlockStart(event.AsContentBlockStart())
 
-			case eventContentBlockStop:
-				state.currentToolID = ""
-
 			case eventContentBlockDelta:
-				chunk = state.handleContentBlockDelta(event.AsContentBlockDelta())
+				chunk = state.handleContentBlockDelta(event.AsContentBlockDelta(), &accumulated)
 
 			case eventMessageDelta:
 				chunk = new(state.handleMessageDelta(event.AsMessageDelta()))
@@ -374,14 +369,17 @@ func (s *streamState) chunk(delta providers.ChunkDelta) providers.ChatCompletion
 }
 
 // handleContentBlockDelta processes a content_block_delta event and returns a chunk if applicable.
-func (s *streamState) handleContentBlockDelta(event anthropic.ContentBlockDeltaEvent) *providers.ChatCompletionChunk {
+func (s *streamState) handleContentBlockDelta(
+	event anthropic.ContentBlockDeltaEvent,
+	message *anthropic.Message,
+) *providers.ChatCompletionChunk {
 	switch event.Delta.Type {
 	case deltaTypeText:
 		return s.handleTextDelta(event.Delta.Text)
 	case deltaTypeThinking:
 		return s.handleThinkingDelta(event.Delta.Thinking)
 	case deltaTypeInputJSON:
-		return s.handleInputJSONDelta(event.Delta.PartialJSON)
+		return s.handleInputJSONDelta(message.Content[event.Index].ID, event.Delta.PartialJSON)
 	default:
 		return nil
 	}
@@ -389,15 +387,12 @@ func (s *streamState) handleContentBlockDelta(event anthropic.ContentBlockDeltaE
 
 // handleContentBlockStart processes a content_block_start event.
 func (s *streamState) handleContentBlockStart(event anthropic.ContentBlockStartEvent) *providers.ChatCompletionChunk {
-	s.currentToolID = ""
-
 	if event.ContentBlock.Type != blockTypeToolUse {
 		return nil
 	}
 
-	s.currentToolID = event.ContentBlock.ID
 	chunk := s.chunk(providers.ChunkDelta{ToolCalls: []providers.ToolCall{{
-		ID:       s.currentToolID,
+		ID:       event.ContentBlock.ID,
 		Type:     toolTypeFunction,
 		Function: providers.FunctionCall{Name: event.ContentBlock.Name},
 	}}})
@@ -406,16 +401,16 @@ func (s *streamState) handleContentBlockStart(event anthropic.ContentBlockStartE
 }
 
 // handleInputJSONDelta processes a tool input JSON delta and returns a chunk if applicable.
-func (s *streamState) handleInputJSONDelta(partialJSON string) *providers.ChatCompletionChunk {
-	if s.currentToolID == "" {
+func (s *streamState) handleInputJSONDelta(toolID, partialJSON string) *providers.ChatCompletionChunk {
+	if toolID == "" {
 		return nil
 	}
 
 	// Consumers concatenate partial_json fragments; sending accumulated input
-	// would duplicate every earlier fragment. Only block identity is retained.
+	// would duplicate every earlier fragment. Read only the indexed block identity.
 	// https://platform.claude.com/docs/en/build-with-claude/streaming#input-json-delta
 	chunk := s.chunk(providers.ChunkDelta{ToolCalls: []providers.ToolCall{{
-		ID:       s.currentToolID,
+		ID:       toolID,
 		Type:     toolTypeFunction,
 		Function: providers.FunctionCall{Arguments: partialJSON},
 	}}})
@@ -1142,22 +1137,25 @@ func (p *Provider) ConvertError(err error) error {
 		return anthropicRateLimitError(apiErr, err)
 	case shared.ErrorTypeInvalidRequestError:
 		return anthropicInvalidRequestError(apiErr, err)
+	case shared.ErrorTypeNotFoundError:
+		// Preserve the historical classification even though 404 can name other resources.
+		return errors.NewModelNotFoundError(providerName, err)
 	case shared.ErrorTypePermissionError,
-		shared.ErrorTypeNotFoundError,
 		shared.ErrorTypeTimeoutError,
 		shared.ErrorTypeOverloadedError,
 		shared.ErrorTypeAPIError:
 		return errors.NewProviderError(providerName, err)
 	}
 
-	// A missing or unknown body can only be narrowed when the HTTP status maps
-	// unambiguously to a normalized error. In particular, 403 is permission,
-	// 404 can name any resource, and 413 is a byte-size limit.
+	// Preserve status-based compatibility when the body is missing or unknown.
+	// Permission failures and byte-size limits remain generic provider errors.
 	switch apiErr.StatusCode {
 	case http.StatusUnauthorized:
 		return errors.NewAuthenticationError(providerName, err)
 	case http.StatusPaymentRequired:
 		return errors.NewInsufficientFundsError(providerName, err)
+	case http.StatusNotFound:
+		return errors.NewModelNotFoundError(providerName, err)
 	case http.StatusTooManyRequests:
 		return anthropicRateLimitError(apiErr, err)
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
