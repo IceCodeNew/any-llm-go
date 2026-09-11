@@ -467,6 +467,9 @@ func applyThinking(req *anthropic.MessageNewParams, effort providers.ReasoningEf
 		// https://platform.claude.com/docs/en/build-with-claude/thinking
 		return nil
 	case providers.ReasoningEffortNone:
+		// Always-on-thinking models reject disabled thinking. Let that error
+		// reach the caller rather than silently enabling thinking for explicit none.
+		// https://platform.claude.com/docs/en/build-with-claude/thinking
 		req.Thinking = anthropic.ThinkingConfigParamUnion{
 			OfDisabled: new(anthropic.NewThinkingConfigDisabledParam()),
 		}
